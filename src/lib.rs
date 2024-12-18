@@ -1,8 +1,18 @@
+use lazy_static::lazy_static;
 use num_bigint::BigUint;
 use rand::Rng;
 
 /// The prime modulus used in ML-KEM
 const MLKEM_Q: u16 = 3329;
+
+pub fn rand_vec<const N: usize>(rng: &mut impl Rng) -> [u16; N] {
+    let mut out = [0u16; N];
+    for coeff in out.iter_mut().rev() {
+        *coeff = rng.gen::<u16>() % MLKEM_Q;
+    }
+
+    out
+}
 
 /// Attempts to run the Kemeleon encoding for the given NTT vector. Top few bits
 /// get set to random.
@@ -42,14 +52,19 @@ fn divrem_by_q(x: &BigUint) -> (BigUint, BigUint) {
 }
 */
 
+// Rather than dividing by q, we can multiply by ⌊2^u / q⌋ for sufficiently
+// large u, then divide by 2^u
+const U: u32 = 2u32.pow(15);
+lazy_static! {
+    static ref TWOPOWU: BigUint = BigUint::from(2u8).pow(U);
+    static ref TWOQINV: BigUint = &*TWOPOWU / MLKEM_Q;
+}
+
 fn divrem_by_q(x: &BigUint) -> (BigUint, BigUint) {
     // Rather than dividing by q, we can multiply by ⌊2^u / q⌋ for sufficiently
     // large u, then divide by 2^u
-    let u = 2u32.pow(20);
-    let twopowu = BigUint::from(2u8).pow(u);
-    let twoqinv = &twopowu / MLKEM_Q;
 
-    let quot = (x * &twoqinv) >> u;
+    let quot = (x * &*TWOQINV) >> U;
     let rem = x - &(&quot * MLKEM_Q);
 
     if rem >= BigUint::from(MLKEM_Q) {
@@ -106,23 +121,14 @@ mod tests {
 
     const N: usize = 512;
 
-    fn rand_vec(rng: &mut impl Rng) -> [u16; N] {
-        let mut out = [0u16; N];
-        for coeff in out.iter_mut().rev() {
-            *coeff = rng.gen::<u16>() % MLKEM_Q;
-        }
-
-        out
-    }
-
     #[test]
     fn test_encode_decode() {
         let mut rng = rand::thread_rng();
 
         // Make random vectors and round-trip encode them
         let mut num_encoded = 0;
-        for i in 0..100 {
-            let v = rand_vec(&mut rng);
+        for i in 0..1000 {
+            let v = rand_vec::<N>(&mut rng);
             let encoded = vector_encode(&mut rng, &v);
             if let Some(bytes) = encoded {
                 num_encoded += 1;
