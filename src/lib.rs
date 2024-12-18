@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use lazy_static::lazy_static;
 use num_bigint::BigUint;
 use rand::Rng;
@@ -52,30 +54,28 @@ fn divrem_by_q(x: &BigUint) -> (BigUint, BigUint) {
 }
 */
 
-// Rather than dividing x by q, we can multiply x by ⌊2^u / q⌋ for sufficiently
-// large u, then divide by 2^u.
+// Rather than dividing x by q (or a power thereof), we can multiply x by ⌊2^u / q⌋ for
+// sufficiently large u, then divide by 2^u (ie right-shift by u)
 // In addition, rather than using the same u for every x, we can use
-// smaller u for larger x.
+// smaller u for smaller x.
 lazy_static! {
-    static ref US: Vec<u32> = vec![
-        2u32.pow(5),
-        2u32.pow(6),
-        2u32.pow(7),
-        2u32.pow(10),
-        2u32.pow(15)
-    ];
+    static ref US: Vec<u32> = (9..10).map(|i| 4 * 12 * 2u32.pow(i)).collect();
+    static ref QPOWS: Vec<BigUint> = (0..9)
+        .map(|i| BigUint::from(MLKEM_Q).pow(2u32.pow(i)))
+        .collect();
     static ref TWOPOWUS: Vec<BigUint> = US.iter().map(|u| BigUint::from(2u8).pow(*u)).collect();
-    static ref TWOQINVS: Vec<BigUint> = TWOPOWUS.iter().map(|tpu| tpu / MLKEM_Q).collect();
+    static ref SCALEDQPOWINVS: Vec<BigUint> = TWOPOWUS
+        .iter()
+        .zip(QPOWS.iter())
+        .map(|(tpu, qpow)| tpu / qpow)
+        .collect();
 }
 
-fn divrem_by_q(x: &BigUint) -> (BigUint, BigUint) {
-    // Get the smallest u such that we can do Barrett division with u
-    let u_idx = match US.binary_search(&(2 * x.bits() as u32)) {
-        Ok(i) => i,
-        Err(i) => i,
-    };
+/// Divides x by q^(2^pow) and returns (quotient, remainder)
+fn divrem_by_qpow(x: &BigUint, pow: u32) -> (BigUint, BigUint) {
+    let u_idx = pow as usize;
 
-    let quot = (x * &TWOQINVS[u_idx]) >> US[u_idx];
+    let quot = (x * &SCALEDQPOWINVS[u_idx]) >> US[u_idx];
     let rem = x - &(&quot * MLKEM_Q);
 
     if rem >= BigUint::from(MLKEM_Q) {
@@ -103,7 +103,7 @@ pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
     let mut i = 0;
     for coeff in out.iter_mut().rev() {
         // Compute quot, rem such that repr = quot*q + rem
-        let (quot, rem) = divrem_by_q(&repr);
+        let (quot, rem) = divrem_by_qpow(&repr, 0);
 
         // Sanity check: rem < Q
         assert!(
