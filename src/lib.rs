@@ -52,19 +52,30 @@ fn divrem_by_q(x: &BigUint) -> (BigUint, BigUint) {
 }
 */
 
-// Rather than dividing by q, we can multiply by ⌊2^u / q⌋ for sufficiently
-// large u, then divide by 2^u
-const U: u32 = 2u32.pow(15);
+// Rather than dividing x by q, we can multiply x by ⌊2^u / q⌋ for sufficiently
+// large u, then divide by 2^u.
+// In addition, rather than using the same u for every x, we can use
+// smaller u for larger x.
 lazy_static! {
-    static ref TWOPOWU: BigUint = BigUint::from(2u8).pow(U);
-    static ref TWOQINV: BigUint = &*TWOPOWU / MLKEM_Q;
+    static ref US: Vec<u32> = vec![
+        2u32.pow(5),
+        2u32.pow(6),
+        2u32.pow(7),
+        2u32.pow(10),
+        2u32.pow(15)
+    ];
+    static ref TWOPOWUS: Vec<BigUint> = US.iter().map(|u| BigUint::from(2u8).pow(*u)).collect();
+    static ref TWOQINVS: Vec<BigUint> = TWOPOWUS.iter().map(|tpu| tpu / MLKEM_Q).collect();
 }
 
 fn divrem_by_q(x: &BigUint) -> (BigUint, BigUint) {
-    // Rather than dividing by q, we can multiply by ⌊2^u / q⌋ for sufficiently
-    // large u, then divide by 2^u
+    // Get the smallest u such that we can do Barrett division with u
+    let u_idx = match US.binary_search(&(2 * x.bits() as u32)) {
+        Ok(i) => i,
+        Err(i) => i,
+    };
 
-    let quot = (x * &*TWOQINV) >> U;
+    let quot = (x * &TWOQINVS[u_idx]) >> US[u_idx];
     let rem = x - &(&quot * MLKEM_Q);
 
     if rem >= BigUint::from(MLKEM_Q) {
