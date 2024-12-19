@@ -61,9 +61,12 @@ fn divrem_by_qpow(x: &BigUint, pow: u32) -> (BigUint, BigUint) {
 // In addition, rather than using the same u for every x, we can use
 // smaller u for smaller x.
 lazy_static! {
-    static ref US: Vec<u32> = (0..9).map(|i| 4 * 12 * 2u32.pow(i)).collect();
-    static ref QPOWS: Vec<BigUint> = (0..9)
+    static ref QPOWS: Vec<BigUint> = (0..10)
         .map(|i| BigUint::from(MLKEM_Q).pow(2u32.pow(i)))
+        .collect();
+    static ref US: Vec<u32> = QPOWS
+        .iter()
+        .map(|qpow| 2 * (qpow.bits() + 1) as u32)
         .collect();
     static ref TWOPOWUS: Vec<BigUint> = US.iter().map(|u| BigUint::from(2u8).pow(*u)).collect();
     static ref SCALEDQPOWINVS: Vec<BigUint> = TWOPOWUS
@@ -78,13 +81,30 @@ fn divrem_by_qpow(x: &BigUint, pow: u32) -> (BigUint, BigUint) {
     let u_idx = pow as usize;
     let qpow = &QPOWS[u_idx];
 
-    let quot = (x * &SCALEDQPOWINVS[u_idx]) >> US[u_idx];
-    let rem = x - &(&quot * qpow);
+    let preshift = 0; //(US[u_idx] >> 1) - 1;
+    let postshift = US[u_idx] - preshift;
+    let mut quot = ((x >> preshift) * &SCALEDQPOWINVS[u_idx]) >> postshift;
+    let mut rem = x - &(&quot * qpow);
 
     if &rem >= qpow {
-        (quot + 1u32, BigUint::ZERO)
+        quot += 1u32;
+        rem -= qpow;
+    }
+    if &rem >= qpow {
+        quot += 1u32;
+        rem -= qpow;
+    }
+
+    (quot, rem)
+}
+
+// A naive impl of ceil(log2(x))
+fn log2_ceil(x: usize) -> u32 {
+    let log2_floor = x.ilog2();
+    if 2usize.pow(log2_floor) == x {
+        log2_floor
     } else {
-        (quot, rem)
+        log2_floor + 1
     }
 }
 
@@ -105,13 +125,13 @@ pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
     let mut out = [0u16; N];
     let mut i = 0;
     let mut cur_limbs = vec![repr];
-    for pow in (0..N.ilog2()).rev() {
+    for pow in (0..log2_ceil(N)).rev() {
         let next_limbs = cur_limbs
             .iter()
             .flat_map(|limb| {
                 let (quot, rem) = divrem_by_qpow(limb, pow);
 
-                // Sanity check: rem < Q
+                // Sanity check: rem < q^(2^pow)
                 assert!(
                     rem < QPOWS[pow as usize],
                     "i={i}: rem too big: {:?}, rest = {:?}",
