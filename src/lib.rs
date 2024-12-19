@@ -81,7 +81,7 @@ fn divrem_by_qpow(x: &BigUint, pow: u32) -> (BigUint, BigUint) {
     let u_idx = pow as usize;
     let qpow = &QPOWS[u_idx];
 
-    let preshift = 0; //(US[u_idx] >> 1) - 1;
+    let preshift = (US[u_idx] >> 1) - 1;
     let postshift = US[u_idx] - preshift;
     let mut quot = ((x >> preshift) * &SCALEDQPOWINVS[u_idx]) >> postshift;
     let mut rem = x - &(&quot * qpow);
