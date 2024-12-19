@@ -45,10 +45,12 @@ pub fn vector_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Option
     }
 }
 
-/* The absolute most naive implementation
-fn divrem_by_q(x: &BigUint) -> (BigUint, BigUint) {
-    let quot = x / MLKEM_Q;
-    let rem = x - &(&quot * MLKEM_Q);
+/*
+// The absolute most naive implementation
+fn divrem_by_qpow(x: &BigUint, pow: u32) -> (BigUint, BigUint) {
+    let qpow = BigUint::from(MLKEM_Q).pow(2u32.pow(pow));
+    let quot = x / &qpow;
+    let rem = x - &(&quot * &qpow);
 
     (quot, rem)
 }
@@ -59,7 +61,7 @@ fn divrem_by_q(x: &BigUint) -> (BigUint, BigUint) {
 // In addition, rather than using the same u for every x, we can use
 // smaller u for smaller x.
 lazy_static! {
-    static ref US: Vec<u32> = (9..10).map(|i| 4 * 12 * 2u32.pow(i)).collect();
+    static ref US: Vec<u32> = (0..9).map(|i| 4 * 12 * 2u32.pow(i)).collect();
     static ref QPOWS: Vec<BigUint> = (0..9)
         .map(|i| BigUint::from(MLKEM_Q).pow(2u32.pow(i)))
         .collect();
@@ -74,11 +76,12 @@ lazy_static! {
 /// Divides x by q^(2^pow) and returns (quotient, remainder)
 fn divrem_by_qpow(x: &BigUint, pow: u32) -> (BigUint, BigUint) {
     let u_idx = pow as usize;
+    let qpow = &QPOWS[u_idx];
 
     let quot = (x * &SCALEDQPOWINVS[u_idx]) >> US[u_idx];
-    let rem = x - &(&quot * MLKEM_Q);
+    let rem = x - &(&quot * qpow);
 
-    if rem >= BigUint::from(MLKEM_Q) {
+    if &rem >= qpow {
         (quot + 1u32, BigUint::ZERO)
     } else {
         (quot, rem)
@@ -101,26 +104,34 @@ pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
 
     let mut out = [0u16; N];
     let mut i = 0;
-    for coeff in out.iter_mut().rev() {
-        // Compute quot, rem such that repr = quot*q + rem
-        let (quot, rem) = divrem_by_qpow(&repr, 0);
+    let mut cur_limbs = vec![repr];
+    for pow in (0..N.ilog2()).rev() {
+        let next_limbs = cur_limbs
+            .iter()
+            .flat_map(|limb| {
+                let (quot, rem) = divrem_by_qpow(limb, pow);
 
-        // Sanity check: rem < Q
-        assert!(
-            rem < BigUint::from(MLKEM_Q),
-            "i={i}: rem too big: {:?}, rest = {:?}",
-            rem,
-            quot
-        );
+                // Sanity check: rem < Q
+                assert!(
+                    rem < QPOWS[pow as usize],
+                    "i={i}: rem too big: {:?}, rest = {:?}",
+                    rem,
+                    quot
+                );
 
-        // Now convert rem to a u16 and set the coefficient to it
+                [quot, rem]
+            })
+            .collect();
+        cur_limbs = next_limbs;
+        i += 1;
+    }
+
+    for (coeff, limb) in out.iter_mut().zip(cur_limbs.iter()).rev() {
+        // Convert the limb to a u16 and set the coefficient to it
         *coeff = {
-            let mut it = rem.iter_u32_digits();
+            let mut it = limb.iter_u32_digits();
             it.next().unwrap_or(0) as u16
         };
-        // Continue
-        repr = quot;
-        i += 1;
     }
 
     out
