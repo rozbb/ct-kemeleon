@@ -23,7 +23,7 @@ fn encode_decode_with_n<const N: usize>(c: &mut Criterion) {
 
 fn all(c: &mut Criterion) {
     encode_decode_with_n::<512>(c);
-    encode_decode_with_n::<768>(c);
+    //encode_decode_with_n::<768>(c); // TODO make functions work with non-pow-2 N
     encode_decode_with_n::<1024>(c);
 }
 

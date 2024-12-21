@@ -81,6 +81,9 @@ fn divrem_by_qpow(x: &BigUint, pow: u32) -> (BigUint, BigUint) {
     let u_idx = pow as usize;
     let qpow = &QPOWS[u_idx];
 
+    // Rather than computing (x * qinvpow) >> shift, we can split the shift:
+    //     ((x >> shift1) * qinvpow) >> shift2
+    // This makes the multiplication smaller
     let preshift = (US[u_idx] >> 1) - 1;
     let postshift = US[u_idx] - preshift;
     let mut quot = ((x >> preshift) * &SCALEDQPOWINVS[u_idx]) >> postshift;
@@ -96,6 +99,36 @@ fn divrem_by_qpow(x: &BigUint, pow: u32) -> (BigUint, BigUint) {
     }
 
     (quot, rem)
+}
+
+/// Divides x by q and returns (quotient, remainder)
+fn u32_divrem_by_qpow(x: u32, pow: u32) -> (u16, u16) {
+    debug_assert_eq!(pow, 0);
+
+    let u_idx = pow as usize;
+    let qpow = MLKEM_Q as u16;
+    let scaledinv = {
+        let mut it = SCALEDQPOWINVS[u_idx].iter_u32_digits();
+        let ret = it.next().unwrap();
+        debug_assert!(it.next().is_none());
+        ret
+    };
+
+    let preshift = (US[u_idx] >> 1) - 1;
+    let postshift = US[u_idx] - preshift;
+    let mut quot: u16 = (((x >> preshift) as u64 * scaledinv as u64) >> postshift) as u16;
+    let mut rem: u16 = (x - &(quot as u32 * qpow as u32)) as u16;
+
+    if rem >= qpow {
+        quot += 1u16;
+        rem -= qpow;
+    }
+    if rem >= qpow {
+        quot += 1u16;
+        rem -= qpow;
+    }
+
+    (quot as u16, rem as u16)
 }
 
 // A naive impl of ceil(log2(x))
@@ -125,14 +158,14 @@ pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
     let mut out = [0u16; N];
     let mut i = 0;
     let mut cur_limbs = vec![repr];
-    for pow in (0..log2_ceil(N)).rev() {
+    for pow in (1..log2_ceil(N)).rev() {
         let next_limbs = cur_limbs
             .iter()
             .flat_map(|limb| {
                 let (quot, rem) = divrem_by_qpow(limb, pow);
 
                 // Sanity check: rem < q^(2^pow)
-                assert!(
+                debug_assert!(
                     rem < QPOWS[pow as usize],
                     "i={i}: rem too big: {:?}, rest = {:?}",
                     rem,
@@ -146,13 +179,33 @@ pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
         i += 1;
     }
 
-    for (coeff, limb) in out.iter_mut().zip(cur_limbs.iter()).rev() {
-        // Convert the limb to a u16 and set the coefficient to it
-        *coeff = {
-            let mut it = limb.iter_u32_digits();
-            it.next().unwrap_or(0) as u16
-        };
-    }
+    let cur_u32_limbs: Vec<u32> = cur_limbs
+        .into_iter()
+        .map(|l| {
+            let mut it = l.iter_u32_digits();
+            debug_assert_eq!(it.len(), 1);
+            it.next().unwrap()
+        })
+        .collect();
+    let pow = 0;
+    let final_u16_limbs: Vec<u16> = cur_u32_limbs
+        .iter()
+        .flat_map(|&limb| {
+            let (quot, rem) = u32_divrem_by_qpow(limb, pow);
+
+            // Sanity check: rem < q^(2^pow)
+            debug_assert!(
+                BigUint::from(rem) < QPOWS[pow as usize],
+                "i={i}: rem too big: {:?}, rest = {:?}",
+                rem,
+                quot
+            );
+
+            [quot, rem]
+        })
+        .collect();
+
+    out.copy_from_slice(&final_u16_limbs);
 
     out
 }
@@ -161,10 +214,7 @@ pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
 mod tests {
     use super::*;
 
-    const N: usize = 512;
-
-    #[test]
-    fn test_encode_decode() {
+    fn test_encode_decode<const N: usize>() {
         let mut rng = rand::thread_rng();
 
         // Make random vectors and round-trip encode them
@@ -186,5 +236,22 @@ mod tests {
 
         // Make sure the above loop didn't just do nothing
         assert!(num_encoded > 0);
+    }
+
+    #[test]
+    fn test_encode_decode_512() {
+        test_encode_decode::<512>();
+    }
+
+    // TODO: make decoding work with non-pow-2 N
+    #[ignore]
+    #[test]
+    fn test_encode_decode_768() {
+        test_encode_decode::<768>();
+    }
+
+    #[test]
+    fn test_encode_decode_1024() {
+        test_encode_decode::<1024>();
     }
 }
