@@ -16,6 +16,16 @@ pub fn rand_vec<const N: usize>(rng: &mut impl Rng) -> [u16; N] {
     out
 }
 
+// A naive impl of ceil(log2(x))
+fn log2_ceil(x: usize) -> u32 {
+    let log2_floor = x.ilog2();
+    if 2usize.pow(log2_floor) == x {
+        log2_floor
+    } else {
+        log2_floor + 1
+    }
+}
+
 /// Attempts to run the Kemeleon encoding for the given NTT vector. Top few bits
 /// get set to random.
 pub fn vector_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Option<Vec<u8>> {
@@ -101,16 +111,6 @@ fn divrem_by_qpow(x: &BigUint, pow: u32) -> (BigUint, BigUint) {
     (quot, rem)
 }
 
-// A naive impl of ceil(log2(x))
-fn log2_ceil(x: usize) -> u32 {
-    let log2_floor = x.ilog2();
-    if 2usize.pow(log2_floor) == x {
-        log2_floor
-    } else {
-        log2_floor + 1
-    }
-}
-
 /// Given a sequence of limbs x in big-endian order in base b, returns a sequence of limbs in
 /// big-endian order in base b/q^(2^pow)
 fn lower_base_by(x: Vec<BigUint>, pow: u32) -> Vec<BigUint> {
@@ -134,54 +134,64 @@ fn lower_base_by(x: Vec<BigUint>, pow: u32) -> Vec<BigUint> {
         .collect()
 }
 
-/// Divides x by q and returns (quotient, remainder)
-fn u32_divrem_by_qpow(x: u32, pow: u32) -> (u16, u16) {
-    debug_assert_eq!(pow, 0);
+macro_rules! impl_native_base_lowering {
+    ($smallnum:ty, $biggernum:ty, $biggerernum:ty, $qpow:expr, $fnname:ident) => {
+        /// Same thing as lower_base_by, but specialized to `x: Vec<$biggernum>` and `pow=0`
+        fn $fnname(x: Vec<$biggernum>, pow: u32) -> Vec<$smallnum> {
+            // Divides x by q and returns (quotient, remainder)
+            fn native_divrem_by_qpow(x: $biggernum, pow: u32) -> ($smallnum, $smallnum) {
+                debug_assert_eq!(pow, $qpow);
 
-    let u_idx = pow as usize;
-    let qpow = MLKEM_Q as u16;
-    let scaledinv = {
-        let mut it = SCALEDQPOWINVS[u_idx].iter_u32_digits();
-        let ret = it.next().unwrap();
-        debug_assert!(it.next().is_none());
-        ret
+                let u_idx = pow as usize;
+                let qpow = QPOWS[pow as usize].iter_u64_digits().next().unwrap() as $smallnum;
+                let scaledinv = {
+                    let mut it = SCALEDQPOWINVS[u_idx].iter_u64_digits();
+                    let ret = it.next().unwrap() as $biggernum;
+                    debug_assert!(it.next().is_none());
+                    ret
+                };
+
+                let preshift = (US[u_idx] >> 1) - 1;
+                let postshift = US[u_idx] - preshift;
+                let mut quot: $smallnum = (((x >> preshift) as $biggerernum
+                    * scaledinv as $biggerernum)
+                    >> postshift) as $smallnum;
+                let mut rem: $smallnum =
+                    (x - &(quot as $biggernum * qpow as $biggernum)) as $smallnum;
+
+                if rem >= qpow {
+                    quot += 1;
+                    rem -= qpow;
+                }
+                if rem >= qpow {
+                    quot += 1;
+                    rem -= qpow;
+                }
+
+                (quot as $smallnum, rem as $smallnum)
+            }
+
+            x.iter()
+                .flat_map(|&limb| {
+                    let (quot, rem) = native_divrem_by_qpow(limb, pow);
+
+                    // Sanity check: rem < q^(2^pow)
+                    debug_assert!(
+                        BigUint::from(rem) < QPOWS[pow as usize],
+                        "rem too big: {:?}, rest = {:?}",
+                        rem,
+                        quot
+                    );
+
+                    [quot, rem]
+                })
+                .collect()
+        }
     };
-
-    let preshift = (US[u_idx] >> 1) - 1;
-    let postshift = US[u_idx] - preshift;
-    let mut quot: u16 = (((x >> preshift) as u64 * scaledinv as u64) >> postshift) as u16;
-    let mut rem: u16 = (x - &(quot as u32 * qpow as u32)) as u16;
-
-    if rem >= qpow {
-        quot += 1u16;
-        rem -= qpow;
-    }
-    if rem >= qpow {
-        quot += 1u16;
-        rem -= qpow;
-    }
-
-    (quot as u16, rem as u16)
 }
 
-/// Same thing as lower_base_by, but specialized to `x: Vec<u32>` and `pow=0`
-fn u32_lower_base_by(x: Vec<u32>, pow: u32) -> Vec<u16> {
-    x.iter()
-        .flat_map(|&limb| {
-            let (quot, rem) = u32_divrem_by_qpow(limb, pow);
-
-            // Sanity check: rem < q^(2^pow)
-            debug_assert!(
-                BigUint::from(rem) < QPOWS[pow as usize],
-                "rem too big: {:?}, rest = {:?}",
-                rem,
-                quot
-            );
-
-            [quot, rem]
-        })
-        .collect()
-}
+impl_native_base_lowering!(u16, u32, u64, 0, u32_lower_base_by);
+impl_native_base_lowering!(u32, u64, u128, 1, u64_lower_base_by);
 
 /// Undoes Kemeleon encoding
 pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
@@ -197,21 +207,28 @@ pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
         repr.set_bit(i, false);
     }
 
+    // Change the base from q^N to q^(N/2) to q^(N/4), etc. until we get to q^2
     let mut cur_limbs = vec![repr];
-    for pow in (1..log2_ceil(N)).rev() {
+    for pow in (2..log2_ceil(N)).rev() {
         cur_limbs = lower_base_by(cur_limbs, pow);
     }
 
-    let cur_u32_limbs: Vec<u32> = cur_limbs
+    // Now continue to lower the base, but use native arithmetic for a speedup.
+    let pow = 1;
+    // Convert existing bigints to u64
+    let u64_limbs: Vec<u64> = cur_limbs
         .into_iter()
         .map(|l| {
-            let mut it = l.iter_u32_digits();
+            let mut it = l.iter_u64_digits();
             debug_assert_eq!(it.len(), 1);
             it.next().unwrap()
         })
         .collect();
+    let u32_limbs = u64_lower_base_by(u64_limbs, pow);
+
+    // Do it again one last time. The base is now q.
     let pow = 0;
-    let final_u16_limbs = u32_lower_base_by(cur_u32_limbs, pow);
+    let final_u16_limbs = u32_lower_base_by(u32_limbs, pow);
 
     let mut out = [0u16; N];
     out.copy_from_slice(&final_u16_limbs);
