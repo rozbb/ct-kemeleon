@@ -101,6 +101,39 @@ fn divrem_by_qpow(x: &BigUint, pow: u32) -> (BigUint, BigUint) {
     (quot, rem)
 }
 
+// A naive impl of ceil(log2(x))
+fn log2_ceil(x: usize) -> u32 {
+    let log2_floor = x.ilog2();
+    if 2usize.pow(log2_floor) == x {
+        log2_floor
+    } else {
+        log2_floor + 1
+    }
+}
+
+/// Given a sequence of limbs x in big-endian order in base b, returns a sequence of limbs in
+/// big-endian order in base b/q^(2^pow)
+fn lower_base_by(x: Vec<BigUint>, pow: u32) -> Vec<BigUint> {
+    // For each limb, divide the limb by q^(2^pow) and record (quotient, remainder) in that order.
+    // The final sequence of (quotient1, remainder1, quotient2, remainder2, etc...) is `x` in the
+    // new base.
+    x.iter()
+        .flat_map(|limb| {
+            let (quot, rem) = divrem_by_qpow(limb, pow);
+
+            // Sanity check: rem < q^(2^pow)
+            debug_assert!(
+                rem < QPOWS[pow as usize],
+                "rem too big: {:?}, rest = {:?}",
+                rem,
+                quot
+            );
+
+            [quot, rem]
+        })
+        .collect()
+}
+
 /// Divides x by q and returns (quotient, remainder)
 fn u32_divrem_by_qpow(x: u32, pow: u32) -> (u16, u16) {
     debug_assert_eq!(pow, 0);
@@ -131,14 +164,23 @@ fn u32_divrem_by_qpow(x: u32, pow: u32) -> (u16, u16) {
     (quot as u16, rem as u16)
 }
 
-// A naive impl of ceil(log2(x))
-fn log2_ceil(x: usize) -> u32 {
-    let log2_floor = x.ilog2();
-    if 2usize.pow(log2_floor) == x {
-        log2_floor
-    } else {
-        log2_floor + 1
-    }
+/// Same thing as lower_base_by, but specialized to `x: Vec<u32>` and `pow=0`
+fn u32_lower_base_by(x: Vec<u32>, pow: u32) -> Vec<u16> {
+    x.iter()
+        .flat_map(|&limb| {
+            let (quot, rem) = u32_divrem_by_qpow(limb, pow);
+
+            // Sanity check: rem < q^(2^pow)
+            debug_assert!(
+                BigUint::from(rem) < QPOWS[pow as usize],
+                "rem too big: {:?}, rest = {:?}",
+                rem,
+                quot
+            );
+
+            [quot, rem]
+        })
+        .collect()
 }
 
 /// Undoes Kemeleon encoding
@@ -155,28 +197,9 @@ pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
         repr.set_bit(i, false);
     }
 
-    let mut out = [0u16; N];
-    let mut i = 0;
     let mut cur_limbs = vec![repr];
     for pow in (1..log2_ceil(N)).rev() {
-        let next_limbs = cur_limbs
-            .iter()
-            .flat_map(|limb| {
-                let (quot, rem) = divrem_by_qpow(limb, pow);
-
-                // Sanity check: rem < q^(2^pow)
-                debug_assert!(
-                    rem < QPOWS[pow as usize],
-                    "i={i}: rem too big: {:?}, rest = {:?}",
-                    rem,
-                    quot
-                );
-
-                [quot, rem]
-            })
-            .collect();
-        cur_limbs = next_limbs;
-        i += 1;
+        cur_limbs = lower_base_by(cur_limbs, pow);
     }
 
     let cur_u32_limbs: Vec<u32> = cur_limbs
@@ -188,25 +211,10 @@ pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
         })
         .collect();
     let pow = 0;
-    let final_u16_limbs: Vec<u16> = cur_u32_limbs
-        .iter()
-        .flat_map(|&limb| {
-            let (quot, rem) = u32_divrem_by_qpow(limb, pow);
+    let final_u16_limbs = u32_lower_base_by(cur_u32_limbs, pow);
 
-            // Sanity check: rem < q^(2^pow)
-            debug_assert!(
-                BigUint::from(rem) < QPOWS[pow as usize],
-                "i={i}: rem too big: {:?}, rest = {:?}",
-                rem,
-                quot
-            );
-
-            [quot, rem]
-        })
-        .collect();
-
+    let mut out = [0u16; N];
     out.copy_from_slice(&final_u16_limbs);
-
     out
 }
 
