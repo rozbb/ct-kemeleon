@@ -4,6 +4,8 @@ use lazy_static::lazy_static;
 use num_bigint::BigUint;
 use rand::Rng;
 
+mod bigint;
+
 /// The prime modulus used in ML-KEM
 const MLKEM_Q: u16 = 3329;
 
