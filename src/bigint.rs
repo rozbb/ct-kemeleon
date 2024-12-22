@@ -22,6 +22,16 @@ pub(crate) const fn mac(a: Limb, b: Limb, c: Limb, carry: Limb) -> (Limb, Limb) 
     (ret as Limb, (ret >> Limb::BITS) as Limb)
 }
 
+// Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/primitives.rs#L39C1-L39C86
+/// Computes `self - (rhs + borrow)`, returning the result along with the new borrow.
+pub(crate) const fn sbb(lhs: Limb, rhs: Limb, borrow: Limb) -> (Limb, Limb) {
+    let a = lhs as WideLimb;
+    let b = rhs as WideLimb;
+    let borrow = (borrow >> (Limb::BITS - 1)) as WideLimb;
+    let ret = a.wrapping_sub(b + borrow);
+    (ret as Limb, (ret >> Limb::BITS) as Limb)
+}
+
 // Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/uint/mul.rs#L16
 /// Schoolbook multiplication a.k.a. long multiplication, i.e. the traditional method taught in
 /// schools.
@@ -79,6 +89,17 @@ impl SimpleBigint {
         self.0[limb_idx as usize].conditional_assign(&newlimb_when_false, !value);
     }
 
+    pub(crate) fn increment(&mut self) {
+        let mut carry = false;
+        for limb in self.0.iter_mut() {
+            let (new_limb, new_carry) = limb.overflowing_add(carry as Limb);
+            *limb = new_limb;
+            carry = new_carry;
+        }
+        // Make sure we didn't overflow
+        assert!(!carry);
+    }
+
     /// The number of limbs being used by this bigint
     pub(crate) fn num_limbs(&self) -> usize {
         self.0.len()
@@ -111,7 +132,7 @@ impl SimpleBigint {
         greater | equal_so_far
     }
 
-    pub(crate) fn into_biguint(self) -> BigUint {
+    pub(crate) fn as_biguint(&self) -> BigUint {
         BigUint::from_slice(&self.0)
     }
 }
@@ -155,6 +176,31 @@ impl<'a> core::ops::Mul<&'a SimpleBigint> for &'a SimpleBigint {
     fn mul(self, rhs: Self) -> Self::Output {
         let (hi, lo) = schoolbook_multiplication(&self.0, &rhs.0);
         SimpleBigint([lo, hi].concat())
+    }
+}
+
+impl<'a> core::ops::Sub<&'a SimpleBigint> for &'a SimpleBigint {
+    type Output = SimpleBigint;
+
+    // Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/uint/sub.rs#L11
+    fn sub(self, rhs: &'a SimpleBigint) -> SimpleBigint {
+        assert_eq!(self.0.len(), rhs.0.len());
+
+        let mut borrow = 0;
+        let limbs = self
+            .0
+            .iter()
+            .zip(rhs.0.iter())
+            .map(|(&left, &right)| {
+                let (w, b) = sbb(left, right, borrow);
+                borrow = b;
+                w
+            })
+            .collect();
+
+        assert_eq!(borrow, 0, "attempted to subtract with underflow");
+
+        SimpleBigint(limbs)
     }
 }
 
@@ -235,8 +281,8 @@ mod test {
             let b = rand_biguint(&mut rng);
             let prod = &a * &b;
 
-            let ref_a = BigUint::from_slice(&a.0);
-            let ref_b = BigUint::from_slice(&b.0);
+            let mut ref_a = a.as_biguint();
+            let mut ref_b = b.as_biguint();
             let ref_prod = ref_a * ref_b;
 
             assert_eq!(prod, ref_prod);
@@ -256,7 +302,7 @@ mod test {
             let shift_size = rng.gen_range(0..Limb::BITS * a.0.len() as u32);
             let shr = &a >> shift_size;
 
-            let ref_a = BigUint::from_slice(&a.0);
+            let mut ref_a = a.as_biguint();
             let ref_shr = ref_a >> shift_size;
 
             assert_eq!(shr, ref_shr);
@@ -269,7 +315,7 @@ mod test {
 
         for _ in 0..100 {
             let mut a = rand_biguint(&mut rng);
-            let mut ref_a = BigUint::from_slice(&a.0);
+            let mut ref_a = a.as_biguint();
             if a.0.len() < 1 {
                 continue;
             }
@@ -301,8 +347,8 @@ mod test {
             let a = SimpleBigint(a_limbs);
             let b = SimpleBigint(b_limbs);
 
-            let ref_a = BigUint::from_slice(&a.0);
-            let ref_b = BigUint::from_slice(&b.0);
+            let ref_a = a.as_biguint();
+            let ref_b = b.as_biguint();
 
             let ct_gt = a.ct_gt(&b);
             let ref_gt = ref_a > ref_b;
@@ -317,6 +363,38 @@ mod test {
             let refl_ct_gte = a.ct_gte(&a);
             assert_eq!(bool::from(refl_ct_gt), false);
             assert_eq!(bool::from(refl_ct_gte), true);
+        }
+    }
+
+    #[test]
+    fn sub() {
+        let mut rng = rand::thread_rng();
+
+        for _ in 0..100 {
+            // We need to sample the same number of limbs for both numbers, since that's all that's
+            // supported
+            let num_limbs = rng.gen_range(0..20);
+            let a_limbs = core::iter::repeat_with(|| rng.gen())
+                .take(num_limbs)
+                .collect::<Vec<_>>();
+            let b_limbs = core::iter::repeat_with(|| rng.gen())
+                .take(num_limbs)
+                .collect::<Vec<_>>();
+            let a = SimpleBigint(a_limbs);
+            let b = SimpleBigint(b_limbs);
+
+            let ref_a = a.as_biguint();
+            let ref_b = b.as_biguint();
+
+            if ref_a >= ref_b {
+                let sub = &a - &b;
+                let ref_sub = ref_a - ref_b;
+                assert_eq!(sub, ref_sub);
+            } else {
+                let sub = &b - &a;
+                let ref_sub = ref_b - ref_a;
+                assert_eq!(sub, ref_sub);
+            }
         }
     }
 }

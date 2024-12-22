@@ -101,9 +101,9 @@ fn divrem_by_qpow(x: &BigUint, pow: u32) -> (BigUint, BigUint) {
     let quot = &(&(&x >> preshift) * &SimpleBigint::from(&SCALEDQPOWINVS[u_idx])) >> postshift;
 
     // At this point, convert everything back to BigUint
-    let mut quot = quot.into_biguint();
-    let x = x.into_biguint();
-    let qpow = qpow.into_biguint();
+    let mut quot = quot.as_biguint();
+    let x = x.as_biguint();
+    let qpow = qpow.as_biguint();
 
     let mut rem = x - &(&quot * &qpow);
 
