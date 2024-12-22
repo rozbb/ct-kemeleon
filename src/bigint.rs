@@ -1,4 +1,7 @@
 use num_bigint::BigUint;
+use subtle::{
+    Choice, ConditionallySelectable, ConstantTimeEq, ConstantTimeGreater, ConstantTimeLess,
+};
 
 type Limb = u32;
 type WideLimb = u64;
@@ -55,6 +58,63 @@ fn schoolbook_multiplication(lhs: &[Limb], rhs: &[Limb]) -> (Vec<Limb>, Vec<Limb
     }
 
     (hi, lo)
+}
+
+impl SimpleBigint {
+    pub fn set_bit(&mut self, bit: u64, value: bool) {
+        let value = Choice::from(value as u8);
+        // Find the limb and bit index
+        let limb_idx = bit / Limb::BITS as u64;
+        let bit_idx = bit % Limb::BITS as u64;
+
+        // We don't support setting bits beyond the highest limb
+        assert!((limb_idx as usize) < self.0.len());
+
+        // Compute the new limb for when value is 0 or 1
+        let newlimb_when_true = self.0[limb_idx as usize] | (1 << bit_idx);
+        let newlimb_when_false = self.0[limb_idx as usize] & !(1 << bit_idx);
+
+        // Assign the new limb based on the value
+        self.0[limb_idx as usize].conditional_assign(&newlimb_when_true, value);
+        self.0[limb_idx as usize].conditional_assign(&newlimb_when_false, !value);
+    }
+}
+
+impl ConstantTimeEq for SimpleBigint {
+    fn ct_eq(&self, other: &Self) -> Choice {
+        panic!("ct_eq should never be called");
+
+        if self.0.len() != other.0.len() {
+            return Choice::from(0u8);
+        }
+
+        let mut eq = Choice::from(1u8);
+        for (a, b) in self.0.iter().zip(other.0.iter()).rev() {
+            eq &= a.ct_eq(b);
+        }
+
+        eq
+    }
+}
+
+impl ConstantTimeGreater for SimpleBigint {
+    /// Constant time greater-than comparison. `self` and `other` MUST have the same number of limbs
+    fn ct_gt(&self, other: &Self) -> Choice {
+        assert_eq!(self.0.len(), other.0.len());
+
+        let mut greater = Choice::from(0u8);
+        let mut equal_so_far = Choice::from(1u8);
+
+        // Iterate limbs from most to least significant.
+        // We set `greater` iff the current limb is greater than the other, AND all previously
+        // checked limbs were equal.
+        for (a, b) in self.0.iter().zip(other.0.iter()).rev() {
+            greater |= a.ct_gt(b) & equal_so_far;
+            equal_so_far &= a.ct_eq(b);
+        }
+
+        greater
+    }
 }
 
 impl<'a> core::ops::Mul<&'a SimpleBigint> for &'a SimpleBigint {
@@ -155,13 +215,61 @@ mod test {
                 continue;
             }
 
-            let shift_size = rng.gen_range(0..32 * a.0.len() as u32);
+            let shift_size = rng.gen_range(0..Limb::BITS * a.0.len() as u32);
             let shr = &a >> shift_size;
 
             let ref_a = BigUint::from_slice(&a.0);
             let ref_shr = ref_a >> shift_size;
 
             assert_eq!(shr, ref_shr);
+        }
+    }
+
+    #[test]
+    fn set_bit() {
+        let mut rng = rand::thread_rng();
+
+        for _ in 0..100 {
+            let mut a = rand_biguint(&mut rng);
+            let mut ref_a = BigUint::from_slice(&a.0);
+            if a.0.len() < 1 {
+                continue;
+            }
+
+            let bit = rng.gen_range(0..Limb::BITS as u64 * a.0.len() as u64);
+            let value = rng.gen_bool(0.5);
+
+            a.set_bit(bit, value);
+            ref_a.set_bit(bit, value);
+
+            assert_eq!(a, ref_a);
+        }
+    }
+
+    #[test]
+    fn ct_gt() {
+        let mut rng = rand::thread_rng();
+
+        for _ in 0..100 {
+            // We need to sample the same number of limbs for both numbers, since that's all that's
+            // supported
+            let num_limbs = rng.gen_range(0..20);
+            let a_limbs = core::iter::repeat_with(|| rng.gen())
+                .take(num_limbs)
+                .collect::<Vec<_>>();
+            let b_limbs = core::iter::repeat_with(|| rng.gen())
+                .take(num_limbs)
+                .collect::<Vec<_>>();
+            let a = SimpleBigint(a_limbs);
+            let b = SimpleBigint(b_limbs);
+
+            let ref_a = BigUint::from_slice(&a.0);
+            let ref_b = BigUint::from_slice(&b.0);
+
+            let ct_gt = a.ct_gt(&b);
+            let ref_gt = ref_a > ref_b;
+
+            assert_eq!(bool::from(ct_gt), ref_gt);
         }
     }
 }
