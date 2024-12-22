@@ -98,25 +98,21 @@ fn divrem_by_qpow(x: &BigUint, pow: u32) -> (BigUint, BigUint) {
     // This makes the multiplication smaller
     let preshift = (US[u_idx] >> 1) - 1;
     let postshift = US[u_idx] - preshift;
-    let quot = &(&(&x >> preshift) * &SimpleBigint::from(&SCALEDQPOWINVS[u_idx])) >> postshift;
+    let mut quot = &(&(&x >> preshift) * &SimpleBigint::from(&SCALEDQPOWINVS[u_idx])) >> postshift;
+    let mut rem = &x - &(&quot * &qpow);
+    // The size of rem is the same as that of quot
+    //rem.truncate_to(quot.num_limbs());
 
-    // At this point, convert everything back to BigUint
-    let mut quot = quot.as_biguint();
-    let x = x.as_biguint();
-    let qpow = qpow.as_biguint();
-
-    let mut rem = x - &(&quot * &qpow);
-
-    if &rem >= &qpow {
-        quot += 1u32;
+    if bool::from(rem.ct_gte(&qpow)) {
+        quot.increment();
         rem -= &qpow;
     }
-    if &rem >= &qpow {
-        quot += 1u32;
-        rem -= qpow;
+    if bool::from(rem.ct_gte(&qpow)) {
+        quot.increment();
+        rem -= &qpow;
     }
 
-    (quot, rem)
+    (quot.as_biguint(), rem.as_biguint())
 }
 
 /// Given a sequence of limbs x in big-endian order in base b, returns a sequence of limbs in

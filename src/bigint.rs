@@ -90,14 +90,19 @@ impl SimpleBigint {
     }
 
     pub(crate) fn increment(&mut self) {
-        let mut carry = false;
+        // Add a limb in case this increment overflows
+        self.0.push(0);
+
+        // Add 1 to the least significant limb and carry
+        let mut carry = true;
         for limb in self.0.iter_mut() {
             let (new_limb, new_carry) = limb.overflowing_add(carry as Limb);
             *limb = new_limb;
             carry = new_carry;
         }
-        // Make sure we didn't overflow
-        assert!(!carry);
+
+        // Sanity check: we cannot have overflown
+        debug_assert!(!carry);
     }
 
     /// The number of limbs being used by this bigint
@@ -115,15 +120,13 @@ impl SimpleBigint {
     /// Constant-time greater-than-or-equal-to
     // This is identical to ct_gt except for the return value
     pub(crate) fn ct_gte(&self, other: &Self) -> Choice {
-        assert_eq!(self.0.len(), other.0.len());
-
         let mut greater = Choice::from(0u8);
         let mut equal_so_far = Choice::from(1u8);
 
         // Iterate limbs from most to least significant.
         // We set `greater` iff the current limb is greater than the other, AND all previously
         // checked limbs were equal.
-        for (a, b) in self.0.iter().zip(other.0.iter()).rev() {
+        for (a, b) in self.zip_limbs_iter_rev(other) {
             greater |= a.ct_gt(b) & equal_so_far;
             equal_so_far &= a.ct_eq(b);
         }
@@ -134,6 +137,41 @@ impl SimpleBigint {
 
     pub(crate) fn as_biguint(&self) -> BigUint {
         BigUint::from_slice(&self.0)
+    }
+
+    /// Returns an iterator over the limbs of this bigint and the other bigint, padding the shorter
+    /// one with 0s.
+    fn zip_limbs_iter<'a>(
+        &'a self,
+        other: &'a SimpleBigint,
+    ) -> impl Iterator<Item = (&'a Limb, &'a Limb)> + 'a {
+        let zeros = core::iter::repeat(&0);
+        let max_len = core::cmp::max(self.0.len(), other.0.len());
+
+        self.0
+            .iter()
+            .chain(zeros.clone())
+            .zip(other.0.iter().chain(zeros))
+            .take(max_len)
+    }
+
+    /// Returns the reversed version of `zip_limbs_iter`
+    fn zip_limbs_iter_rev<'a>(
+        &'a self,
+        other: &'a SimpleBigint,
+    ) -> impl Iterator<Item = (&'a Limb, &'a Limb)> + 'a {
+        let zeros = core::iter::repeat(&0);
+        let max_len = core::cmp::max(self.0.len(), other.0.len());
+
+        // Figure out how many zero's we'll need on each side in advance
+        let self_zeros = zeros.clone().take(max_len.saturating_sub(self.num_limbs()));
+        let other_zeros = zeros.take(max_len.saturating_sub(other.num_limbs()));
+
+        // Now reverse the iterators and place the zeros first
+        let padded_reversed_self = self_zeros.chain(self.0.iter().rev());
+        let padded_reversed_other = other_zeros.chain(other.0.iter().rev());
+
+        padded_reversed_self.zip(padded_reversed_other)
     }
 }
 
@@ -153,15 +191,13 @@ impl ConstantTimeEq for SimpleBigint {
 impl ConstantTimeGreater for SimpleBigint {
     /// Constant time greater-than comparison. `self` and `other` MUST have the same number of limbs
     fn ct_gt(&self, other: &Self) -> Choice {
-        assert_eq!(self.0.len(), other.0.len());
-
         let mut greater = Choice::from(0u8);
         let mut equal_so_far = Choice::from(1u8);
 
         // Iterate limbs from most to least significant.
         // We set `greater` iff the current limb is greater than the other, AND all previously
         // checked limbs were equal.
-        for (a, b) in self.0.iter().zip(other.0.iter()).rev() {
+        for (a, b) in self.zip_limbs_iter_rev(other) {
             greater |= a.ct_gt(b) & equal_so_far;
             equal_so_far &= a.ct_eq(b);
         }
@@ -184,13 +220,9 @@ impl<'a> core::ops::Sub<&'a SimpleBigint> for &'a SimpleBigint {
 
     // Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/uint/sub.rs#L11
     fn sub(self, rhs: &'a SimpleBigint) -> SimpleBigint {
-        assert_eq!(self.0.len(), rhs.0.len());
-
         let mut borrow = 0;
         let limbs = self
-            .0
-            .iter()
-            .zip(rhs.0.iter())
+            .zip_limbs_iter(rhs)
             .map(|(&left, &right)| {
                 let (w, b) = sbb(left, right, borrow);
                 borrow = b;
@@ -201,6 +233,12 @@ impl<'a> core::ops::Sub<&'a SimpleBigint> for &'a SimpleBigint {
         assert_eq!(borrow, 0, "attempted to subtract with underflow");
 
         SimpleBigint(limbs)
+    }
+}
+
+impl<'a> core::ops::SubAssign<&'a SimpleBigint> for SimpleBigint {
+    fn sub_assign(&mut self, rhs: &'a SimpleBigint) {
+        *self = &*self - rhs;
     }
 }
 
@@ -281,8 +319,8 @@ mod test {
             let b = rand_biguint(&mut rng);
             let prod = &a * &b;
 
-            let mut ref_a = a.as_biguint();
-            let mut ref_b = b.as_biguint();
+            let ref_a = a.as_biguint();
+            let ref_b = b.as_biguint();
             let ref_prod = ref_a * ref_b;
 
             assert_eq!(prod, ref_prod);
@@ -302,7 +340,7 @@ mod test {
             let shift_size = rng.gen_range(0..Limb::BITS * a.0.len() as u32);
             let shr = &a >> shift_size;
 
-            let mut ref_a = a.as_biguint();
+            let ref_a = a.as_biguint();
             let ref_shr = ref_a >> shift_size;
 
             assert_eq!(shr, ref_shr);
@@ -335,17 +373,8 @@ mod test {
         let mut rng = rand::thread_rng();
 
         for _ in 0..100 {
-            // We need to sample the same number of limbs for both numbers, since that's all that's
-            // supported
-            let num_limbs = rng.gen_range(0..20);
-            let a_limbs = core::iter::repeat_with(|| rng.gen())
-                .take(num_limbs)
-                .collect::<Vec<_>>();
-            let b_limbs = core::iter::repeat_with(|| rng.gen())
-                .take(num_limbs)
-                .collect::<Vec<_>>();
-            let a = SimpleBigint(a_limbs);
-            let b = SimpleBigint(b_limbs);
+            let a = rand_biguint(&mut rng);
+            let b = rand_biguint(&mut rng);
 
             let ref_a = a.as_biguint();
             let ref_b = b.as_biguint();
@@ -367,21 +396,27 @@ mod test {
     }
 
     #[test]
+    fn increment() {
+        let mut rng = rand::thread_rng();
+
+        for i in 0..100 {
+            let mut a = rand_biguint(&mut rng);
+            let mut ref_a = a.as_biguint();
+
+            a.increment();
+            ref_a += 1u32;
+
+            assert_eq!(a, ref_a);
+        }
+    }
+
+    #[test]
     fn sub() {
         let mut rng = rand::thread_rng();
 
         for _ in 0..100 {
-            // We need to sample the same number of limbs for both numbers, since that's all that's
-            // supported
-            let num_limbs = rng.gen_range(0..20);
-            let a_limbs = core::iter::repeat_with(|| rng.gen())
-                .take(num_limbs)
-                .collect::<Vec<_>>();
-            let b_limbs = core::iter::repeat_with(|| rng.gen())
-                .take(num_limbs)
-                .collect::<Vec<_>>();
-            let a = SimpleBigint(a_limbs);
-            let b = SimpleBigint(b_limbs);
+            let a = rand_biguint(&mut rng);
+            let b = rand_biguint(&mut rng);
 
             let ref_a = a.as_biguint();
             let ref_b = b.as_biguint();
