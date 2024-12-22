@@ -1,10 +1,9 @@
-use std::collections::HashMap;
+mod bigint;
+use bigint::SimpleBigint;
 
 use lazy_static::lazy_static;
 use num_bigint::BigUint;
 use rand::Rng;
-
-mod bigint;
 
 /// The prime modulus used in ML-KEM
 const MLKEM_Q: u16 = 3329;
@@ -90,22 +89,29 @@ lazy_static! {
 
 /// Divides x by q^(2^pow) and returns (quotient, remainder)
 fn divrem_by_qpow(x: &BigUint, pow: u32) -> (BigUint, BigUint) {
+    let x = SimpleBigint::from(x);
     let u_idx = pow as usize;
-    let qpow = &QPOWS[u_idx];
+    let qpow = SimpleBigint::from(&QPOWS[u_idx]);
 
     // Rather than computing (x * qinvpow) >> shift, we can split the shift:
     //     ((x >> shift1) * qinvpow) >> shift2
     // This makes the multiplication smaller
     let preshift = (US[u_idx] >> 1) - 1;
     let postshift = US[u_idx] - preshift;
-    let mut quot = ((x >> preshift) * &SCALEDQPOWINVS[u_idx]) >> postshift;
-    let mut rem = x - &(&quot * qpow);
+    let quot = &(&(&x >> preshift) * &SimpleBigint::from(&SCALEDQPOWINVS[u_idx])) >> postshift;
 
-    if &rem >= qpow {
+    // At this point, convert everything back to BigUint
+    let mut quot = quot.into_biguint();
+    let x = x.into_biguint();
+    let qpow = qpow.into_biguint();
+
+    let mut rem = x - &(&quot * &qpow);
+
+    if &rem >= &qpow {
         quot += 1u32;
-        rem -= qpow;
+        rem -= &qpow;
     }
-    if &rem >= qpow {
+    if &rem >= &qpow {
         quot += 1u32;
         rem -= qpow;
     }

@@ -8,7 +8,7 @@ type WideLimb = u64;
 
 /// A little endian representation of a non-negative integer
 #[derive(Debug)]
-struct SimpleBigint(Vec<Limb>);
+pub(crate) struct SimpleBigint(Vec<Limb>);
 
 // Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/primitives.rs#L58
 /// Computes `a + (b * c) + carry`, returning the result along with the new carry.
@@ -61,7 +61,7 @@ fn schoolbook_multiplication(lhs: &[Limb], rhs: &[Limb]) -> (Vec<Limb>, Vec<Limb
 }
 
 impl SimpleBigint {
-    pub fn set_bit(&mut self, bit: u64, value: bool) {
+    pub(crate) fn set_bit(&mut self, bit: u64, value: bool) {
         let value = Choice::from(value as u8);
         // Find the limb and bit index
         let limb_idx = bit / Limb::BITS as u64;
@@ -78,15 +78,47 @@ impl SimpleBigint {
         self.0[limb_idx as usize].conditional_assign(&newlimb_when_true, value);
         self.0[limb_idx as usize].conditional_assign(&newlimb_when_false, !value);
     }
+
+    /// The number of limbs being used by this bigint
+    pub(crate) fn num_limbs(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Truncates this bigint to the given number of limbs. The limbs being truncated MUST all be 0.
+    pub(crate) fn truncate_to(&mut self, num_limbs: usize) {
+        // Make sure the things we're truncating are all 0
+        assert!(self.0.iter().skip(num_limbs).all(|&x| x == 0));
+        self.0.truncate(num_limbs);
+    }
+
+    /// Constant-time greater-than-or-equal-to
+    // This is identical to ct_gt except for the return value
+    pub(crate) fn ct_gte(&self, other: &Self) -> Choice {
+        assert_eq!(self.0.len(), other.0.len());
+
+        let mut greater = Choice::from(0u8);
+        let mut equal_so_far = Choice::from(1u8);
+
+        // Iterate limbs from most to least significant.
+        // We set `greater` iff the current limb is greater than the other, AND all previously
+        // checked limbs were equal.
+        for (a, b) in self.0.iter().zip(other.0.iter()).rev() {
+            greater |= a.ct_gt(b) & equal_so_far;
+            equal_so_far &= a.ct_eq(b);
+        }
+
+        // At this point, equal_so_far == true iff all limbs were equal
+        greater | equal_so_far
+    }
+
+    pub(crate) fn into_biguint(self) -> BigUint {
+        BigUint::from_slice(&self.0)
+    }
 }
 
 impl ConstantTimeEq for SimpleBigint {
     fn ct_eq(&self, other: &Self) -> Choice {
-        panic!("ct_eq should never be called");
-
-        if self.0.len() != other.0.len() {
-            return Choice::from(0u8);
-        }
+        assert_eq!(self.0.len(), other.0.len());
 
         let mut eq = Choice::from(1u8);
         for (a, b) in self.0.iter().zip(other.0.iter()).rev() {
@@ -161,10 +193,16 @@ impl<'a> core::ops::Shr<u32> for &'a SimpleBigint {
     }
 }
 
+impl<'a> From<&'a BigUint> for SimpleBigint {
+    fn from(value: &'a BigUint) -> Self {
+        let limbs = BigUint::to_u32_digits(value);
+        SimpleBigint(limbs)
+    }
+}
+
 impl From<BigUint> for SimpleBigint {
     fn from(value: BigUint) -> Self {
-        let limbs = BigUint::to_u32_digits(&value);
-        SimpleBigint(limbs)
+        SimpleBigint::from(&value)
     }
 }
 
@@ -268,8 +306,17 @@ mod test {
 
             let ct_gt = a.ct_gt(&b);
             let ref_gt = ref_a > ref_b;
+            let ct_gte = a.ct_gte(&b);
+            let ref_gte = ref_a >= ref_b;
 
             assert_eq!(bool::from(ct_gt), ref_gt);
+            assert_eq!(bool::from(ct_gte), ref_gte);
+
+            // Check the reflexive properties
+            let refl_ct_gt = a.ct_gt(&a);
+            let refl_ct_gte = a.ct_gte(&a);
+            assert_eq!(bool::from(refl_ct_gt), false);
+            assert_eq!(bool::from(refl_ct_gte), true);
         }
     }
 }
