@@ -79,7 +79,7 @@ impl<'a> core::ops::Shr<u32> for &'a SimpleBigint {
 
         // Now we just have to do a smaller shift for the remaining limbs
         let mut carry = 0;
-        let buf = self
+        let mut new_limbs: Vec<Limb> = self
             .0
             .iter()
             .skip(new_lowest_limb as usize)
@@ -90,14 +90,14 @@ impl<'a> core::ops::Shr<u32> for &'a SimpleBigint {
                 // Shift the limb
                 let mut new_limb = l >> remaining_shift;
                 // Add in the carryover from the previous shift
-                new_limb |= carry << (Limb::BITS - remaining_shift);
+                new_limb |= carry << ((Limb::BITS - remaining_shift) % Limb::BITS);
 
                 carry = next_carry;
                 new_limb
             })
-            .rev() // reverse to make it little-endian
             .collect();
-        SimpleBigint(buf)
+        new_limbs.reverse(); // Make it big-endian
+        SimpleBigint(new_limbs)
     }
 }
 
@@ -149,13 +149,19 @@ mod test {
     fn shr() {
         let mut rng = rand::thread_rng();
 
-        let a = rand_biguint(&mut rng);
-        let shift_size = rng.gen_range(0..32 * (a.0.len() as u32 - 1));
-        let shr = &a >> shift_size;
+        for _ in 0..100 {
+            let a = rand_biguint(&mut rng);
+            if a.0.len() < 1 {
+                continue;
+            }
 
-        let ref_a = BigUint::from_slice(&a.0);
-        let ref_shr = ref_a >> shift_size;
+            let shift_size = rng.gen_range(0..32 * a.0.len() as u32);
+            let shr = &a >> shift_size;
 
-        assert_eq!(shr, ref_shr);
+            let ref_a = BigUint::from_slice(&a.0);
+            let ref_shr = ref_a >> shift_size;
+
+            assert_eq!(shr, ref_shr);
+        }
     }
 }
