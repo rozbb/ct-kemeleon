@@ -85,23 +85,27 @@ lazy_static! {
         .zip(QPOWS.iter())
         .map(|(tpu, qpow)| tpu / qpow)
         .collect();
+    static ref SIMPLE_QPOWS: Vec<SimpleBigint> = QPOWS.iter().map(SimpleBigint::from).collect();
+    static ref SIMPLE_SCALEDQPOWINVS: Vec<SimpleBigint> =
+        SCALEDQPOWINVS.iter().map(SimpleBigint::from).collect();
+    static ref SIMPLE_TWOPOWUS: Vec<SimpleBigint> =
+        TWOPOWUS.iter().map(SimpleBigint::from).collect();
 }
 
 /// Divides x by q^(2^pow) and returns (quotient, remainder)
-fn divrem_by_qpow(x: &BigUint, pow: u32) -> (BigUint, BigUint) {
-    let x = SimpleBigint::from(x);
+fn divrem_by_qpow(x: &SimpleBigint, pow: u32) -> (SimpleBigint, SimpleBigint) {
     let u_idx = pow as usize;
-    let qpow = SimpleBigint::from(&QPOWS[u_idx]);
+    let qpow = &SIMPLE_QPOWS[u_idx];
 
     // Rather than computing (x * qinvpow) >> shift, we can split the shift:
     //     ((x >> shift1) * qinvpow) >> shift2
     // This makes the multiplication smaller
     let preshift = (US[u_idx] >> 1) - 1;
     let postshift = US[u_idx] - preshift;
-    let mut quot = &(&(&x >> preshift) * &SimpleBigint::from(&SCALEDQPOWINVS[u_idx])) >> postshift;
-    let mut rem = &x - &(&quot * &qpow);
+    let mut quot = &(&(x >> preshift) * &SIMPLE_SCALEDQPOWINVS[u_idx]) >> postshift;
+    let mut rem = x - &(&quot * &qpow);
     // The size of rem is the same as that of quot
-    //rem.truncate_to(quot.num_limbs());
+    rem.truncate_to(quot.num_limbs());
 
     if bool::from(rem.ct_gte(&qpow)) {
         quot.increment();
@@ -112,12 +116,12 @@ fn divrem_by_qpow(x: &BigUint, pow: u32) -> (BigUint, BigUint) {
         rem -= &qpow;
     }
 
-    (quot.as_biguint(), rem.as_biguint())
+    (quot, rem)
 }
 
 /// Given a sequence of limbs x in big-endian order in base b, returns a sequence of limbs in
 /// big-endian order in base b/q^(2^pow)
-fn lower_base_by(x: Vec<BigUint>, pow: u32) -> Vec<BigUint> {
+fn lower_base_by(x: Vec<SimpleBigint>, pow: u32) -> Vec<SimpleBigint> {
     // For each limb, divide the limb by q^(2^pow) and record (quotient, remainder) in that order.
     // The final sequence of (quotient1, remainder1, quotient2, remainder2, etc...) is `x` in the
     // new base.
@@ -127,7 +131,7 @@ fn lower_base_by(x: Vec<BigUint>, pow: u32) -> Vec<BigUint> {
 
             // Sanity check: rem < q^(2^pow)
             debug_assert!(
-                rem < QPOWS[pow as usize],
+                rem.as_biguint() < QPOWS[pow as usize],
                 "rem too big: {:?}, rest = {:?}",
                 rem,
                 quot
@@ -147,9 +151,9 @@ macro_rules! impl_native_base_lowering {
                 debug_assert_eq!(pow, $qpow);
 
                 let u_idx = pow as usize;
-                let qpow = QPOWS[pow as usize].iter_u64_digits().next().unwrap() as $smallnum;
+                let qpow = SIMPLE_QPOWS[pow as usize].u64_limbs().next().unwrap() as $smallnum;
                 let scaledinv = {
-                    let mut it = SCALEDQPOWINVS[u_idx].iter_u64_digits();
+                    let mut it = SIMPLE_SCALEDQPOWINVS[u_idx].u64_limbs();
                     let ret = it.next().unwrap() as $biggernum;
                     debug_assert!(it.next().is_none());
                     ret
@@ -200,7 +204,7 @@ impl_native_base_lowering!(u32, u64, u128, 1, u64_lower_base_by);
 /// Undoes Kemeleon encoding
 pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
     // Parse the bytes and clear the top few bits bc we set them to be random
-    let mut repr = BigUint::from_bytes_be(bytes);
+    let mut repr = SimpleBigint::from(BigUint::from_bytes_be(bytes));
     // Top bit (0-indexed) is ⌈log₂(q^kn + 1)⌉ - 1. n=256 in ML-KEM
     let top_bit_idx = ((N as f64) * (MLKEM_Q as f64).log2()).ceil() as u64 - 1;
     // Need to pad to a byte boundary
@@ -223,9 +227,11 @@ pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
     let u64_limbs: Vec<u64> = cur_limbs
         .into_iter()
         .map(|l| {
-            let mut it = l.iter_u64_digits();
-            debug_assert_eq!(it.len(), 1);
-            it.next().unwrap()
+            let mut it = l.u64_limbs();
+            let out = it.next().unwrap();
+            // Make sure all the remaining limbs are 0
+            debug_assert!(it.all(|l| l == 0));
+            out
         })
         .collect();
     let u32_limbs = u64_lower_base_by(u64_limbs, pow);

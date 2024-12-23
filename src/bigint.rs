@@ -3,8 +3,8 @@ use subtle::{
     Choice, ConditionallySelectable, ConstantTimeEq, ConstantTimeGreater, ConstantTimeLess,
 };
 
-type Limb = u32;
-type WideLimb = u64;
+type Limb = u64;
+type WideLimb = u128;
 
 /// A little endian representation of a non-negative integer
 #[derive(Debug)]
@@ -113,7 +113,7 @@ impl SimpleBigint {
     /// Truncates this bigint to the given number of limbs. The limbs being truncated MUST all be 0.
     pub(crate) fn truncate_to(&mut self, num_limbs: usize) {
         // Make sure the things we're truncating are all 0
-        assert!(self.0.iter().skip(num_limbs).all(|&x| x == 0));
+        debug_assert!(self.0.iter().skip(num_limbs).all(|&x| x == 0));
         self.0.truncate(num_limbs);
     }
 
@@ -136,7 +136,22 @@ impl SimpleBigint {
     }
 
     pub(crate) fn as_biguint(&self) -> BigUint {
-        BigUint::from_slice(&self.0)
+        // Convert to u32 representation first
+        BigUint::from_slice(&self.u32_limbs().collect::<Vec<_>>())
+    }
+
+    /// Returns a little-endian iterator of the u64 limbs representing this bigint
+    pub(crate) fn u64_limbs(&self) -> impl ExactSizeIterator<Item = u64> + '_ {
+        self.0.iter().copied()
+    }
+
+    /// Returns a little-endian iterator of the u32 limbs representing this bigint
+    pub(crate) fn u32_limbs(&self) -> impl Iterator<Item = u32> + '_ {
+        self.0.iter().flat_map(|&x| {
+            let hi = (x >> 32) as u32;
+            let lo = x as u32;
+            [lo, hi]
+        })
     }
 
     /// Returns an iterator over the limbs of this bigint and the other bigint, padding the shorter
@@ -189,7 +204,7 @@ impl ConstantTimeEq for SimpleBigint {
 }
 
 impl ConstantTimeGreater for SimpleBigint {
-    /// Constant time greater-than comparison. `self` and `other` MUST have the same number of limbs
+    /// Constant time greater-than comparison
     fn ct_gt(&self, other: &Self) -> Choice {
         let mut greater = Choice::from(0u8);
         let mut equal_so_far = Choice::from(1u8);
@@ -203,6 +218,12 @@ impl ConstantTimeGreater for SimpleBigint {
         }
 
         greater
+    }
+}
+
+impl ConstantTimeLess for SimpleBigint {
+    fn ct_lt(&self, other: &Self) -> Choice {
+        !self.ct_gte(other)
     }
 }
 
@@ -279,7 +300,7 @@ impl<'a> core::ops::Shr<u32> for &'a SimpleBigint {
 
 impl<'a> From<&'a BigUint> for SimpleBigint {
     fn from(value: &'a BigUint) -> Self {
-        let limbs = BigUint::to_u32_digits(value);
+        let limbs = BigUint::to_u64_digits(value);
         SimpleBigint(limbs)
     }
 }
@@ -297,8 +318,7 @@ mod test {
 
     impl PartialEq<BigUint> for SimpleBigint {
         fn eq(&self, other: &BigUint) -> bool {
-            let ref_val = BigUint::from_slice(&self.0);
-            ref_val == *other
+            self.as_biguint() == *other
         }
     }
 
@@ -399,7 +419,7 @@ mod test {
     fn increment() {
         let mut rng = rand::thread_rng();
 
-        for i in 0..100 {
+        for _ in 0..100 {
             let mut a = rand_biguint(&mut rng);
             let mut ref_a = a.as_biguint();
 
