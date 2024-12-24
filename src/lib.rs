@@ -93,6 +93,8 @@ lazy_static! {
 }
 
 /// Divides x by q^(2^pow) and returns (quotient, remainder)
+// For this Barrett division, we follow Algorithm 1 in
+//     http://koclab.cs.ucsb.edu/teaching/ecc/project/2015Projects/Terner.pdf
 fn divrem_by_qpow(x: &SimpleBigint, pow: u32) -> (SimpleBigint, SimpleBigint) {
     let u_idx = pow as usize;
     let qpow = &SIMPLE_QPOWS[u_idx];
