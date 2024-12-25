@@ -95,7 +95,7 @@ lazy_static! {
 /// Divides x by q^(2^pow) and returns (quotient, remainder)
 // For this Barrett division, we follow Algorithm 1 in
 //     http://koclab.cs.ucsb.edu/teaching/ecc/project/2015Projects/Terner.pdf
-fn divrem_by_qpow(x: &SimpleBigint, pow: u32) -> (SimpleBigint, SimpleBigint) {
+fn divrem_by_qpow(mut x: SimpleBigint, pow: u32) -> (SimpleBigint, SimpleBigint) {
     let u_idx = pow as usize;
     let qpow = &SIMPLE_QPOWS[u_idx];
 
@@ -104,8 +104,14 @@ fn divrem_by_qpow(x: &SimpleBigint, pow: u32) -> (SimpleBigint, SimpleBigint) {
     // This makes the multiplication smaller
     let preshift = (US[u_idx] >> 1) - 1;
     let postshift = US[u_idx] - preshift;
-    let mut quot = &(&(x >> preshift) * &SIMPLE_SCALEDQPOWINVS[u_idx]) >> postshift;
-    let mut rem = x - &(&quot * &qpow);
+    let mut quot = &(&(&x >> preshift) * &SIMPLE_SCALEDQPOWINVS[u_idx]) >> postshift;
+    // TODO: justify this truncation (beyond "it works and produces faster mults")
+    quot.truncate_to(x.num_limbs() / 2 + 1);
+    // The quotient is at most the difference of the number of limbs of x and qpow, plus 1
+    //quot.truncate_to(x.num_limbs() - qpow.num_limbs() + 1);
+
+    x.truncate_to(postshift as usize);
+    let mut rem = &x - &(&quot * &qpow);
     // The size of rem is the same as that of quot
     rem.truncate_to(quot.num_limbs());
 
@@ -127,7 +133,7 @@ fn lower_base_by(x: Vec<SimpleBigint>, pow: u32) -> Vec<SimpleBigint> {
     // For each limb, divide the limb by q^(2^pow) and record (quotient, remainder) in that order.
     // The final sequence of (quotient1, remainder1, quotient2, remainder2, etc...) is `x` in the
     // new base.
-    x.iter()
+    x.into_iter()
         .flat_map(|limb| {
             let (quot, rem) = divrem_by_qpow(limb, pow);
 
@@ -217,7 +223,7 @@ pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
         repr.set_bit(i, false);
     }
 
-    // Change the base from q^N to q^(N/2) to q^(N/4), etc. until we get to q^2
+    // Change the base from q^N to q^(N/2) to q^(N/4), etc. until we get to q^4
     let mut cur_limbs = vec![repr];
     for pow in (2..log2_ceil(N)).rev() {
         cur_limbs = lower_base_by(cur_limbs, pow);

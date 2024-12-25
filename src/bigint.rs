@@ -86,10 +86,16 @@ fn schoolbook_multiplication(lhs: &[Limb], rhs: &[Limb]) -> (SimpleBigint, Simpl
     (SimpleBigint(lo), SimpleBigint(hi))
 }
 
+/// Number of limbs, below which, we use schoolbook multiplication
+const KARATSUBA_THRESHOLD: usize = 10;
+
 // Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/uint/mul/karatsuba.rs#L37
-fn karatsuba_mul(lhs: &[Limb], rhs: &[Limb], level: usize) -> (SimpleBigint, SimpleBigint) {
+fn karatsuba_mul(lhs: &[Limb], rhs: &[Limb]) -> (SimpleBigint, SimpleBigint) {
     // To do karatsuba, the LHS and RHS must be sufficiently large and approximately the same size
-    if lhs.len() <= 63 || rhs.len() <= 63 || lhs.len() < rhs.len() / 5 || rhs.len() < lhs.len() / 5
+    if lhs.len() <= KARATSUBA_THRESHOLD
+        || rhs.len() <= KARATSUBA_THRESHOLD
+        || lhs.len() < rhs.len() / 5
+        || rhs.len() < lhs.len() / 5
     {
         return schoolbook_multiplication(lhs, rhs);
     }
@@ -139,7 +145,7 @@ fn karatsuba_mul(lhs: &[Limb], rhs: &[Limb], level: usize) -> (SimpleBigint, Sim
 
     l0 = SimpleBigint::conditional_select(&l0, &l0.wrapping_neg(), l0b_nonzero);
     l1 = SimpleBigint::conditional_select(&l1, &l1.wrapping_neg(), l1b_nonzero);
-    let z1 = karatsuba_mul(&l0.0, &l1.0, level + 1);
+    let z1 = karatsuba_mul(&l0.0, &l1.0);
     let z1_neg = l0b_nonzero ^ l1b_nonzero;
 
     // Conditionally add or subtract z1•b depending on its sign
@@ -156,9 +162,9 @@ fn karatsuba_mul(lhs: &[Limb], rhs: &[Limb], level: usize) -> (SimpleBigint, Sim
     res.3 = SimpleBigint::conditional_select(&res.3, &(&res.3).not(), z1_neg);
 
     // Calculate z0 = x0•y0
-    let z0 = karatsuba_mul(x0, y0, level + 1);
+    let z0 = karatsuba_mul(x0, y0);
     // Calculate z2 = x1•y1
-    let z2 = karatsuba_mul(x1, y1, level + 1);
+    let z2 = karatsuba_mul(x1, y1);
 
     // Add z0 + (z0 + z2)•b + z2•b^2
     let mut carry = Limb::conditional_select(&0, &1, z1_neg);
@@ -387,11 +393,11 @@ impl<'a> core::ops::Mul<&'a SimpleBigint> for &'a SimpleBigint {
     type Output = SimpleBigint;
 
     fn mul(self, rhs: Self) -> Self::Output {
-        let mut a = self.0.clone();
-        let mut b = rhs.0.clone();
-
         // Concat zeros until the inputs are the same len and the len is an even number
         // TODO: Fix Karatsuba mult so this isn't necessary
+        /*
+        let mut a = self.0.clone();
+        let mut b = rhs.0.clone();
         let mut max_limbs = core::cmp::max(a.len(), b.len());
         if max_limbs % 2 == 1 {
             max_limbs += 1;
@@ -399,8 +405,9 @@ impl<'a> core::ops::Mul<&'a SimpleBigint> for &'a SimpleBigint {
         a.extend(core::iter::repeat(0).take(max_limbs - a.len()));
         b.extend(core::iter::repeat(0).take(max_limbs - a.len()));
 
-        let (lo, hi) = karatsuba_mul(&a, &b, 0);
-        //let (lo, hi) = schoolbook_multiplication(&self.0, &rhs.0);
+        let (lo, hi) = karatsuba_mul(&a, &b);
+        */
+        let (lo, hi) = schoolbook_multiplication(&self.0, &rhs.0);
         SimpleBigint([lo.0, hi.0].concat())
     }
 }
