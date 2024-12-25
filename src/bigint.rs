@@ -407,8 +407,24 @@ impl<'a> core::ops::Mul<&'a SimpleBigint> for &'a SimpleBigint {
 
         let (lo, hi) = karatsuba_mul(&a, &b);
         */
-        let (lo, hi) = schoolbook_multiplication(&self.0, &rhs.0);
-        SimpleBigint([lo.0, hi.0].concat())
+        //let (lo, hi) = schoolbook_multiplication(&self.0, &rhs.0);
+        //SimpleBigint([lo.0, hi.0].concat())
+
+        let lhs_len = self.num_limbs();
+        let mut out = vec![0; lhs_len + rhs.num_limbs()];
+
+        // Go through the RHS and multiply each limb by the LHS
+        for (i, &rhs_limb) in rhs.0.iter().enumerate() {
+            let mut carry = 0;
+            for j in 0..lhs_len {
+                let (new_limb, new_carry) = mac(out[i + j], self.0[j], rhs_limb, carry);
+                out[i + j] = new_limb;
+                carry = new_carry;
+            }
+            out[i + lhs_len] = carry;
+        }
+
+        SimpleBigint(out)
     }
 }
 
