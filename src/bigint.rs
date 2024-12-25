@@ -9,7 +9,7 @@ type Limb = u64;
 type WideLimb = u128;
 
 /// A little endian representation of a non-negative integer
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct SimpleBigint(Vec<Limb>);
 
 // Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/primitives.rs#L58
@@ -415,27 +415,28 @@ impl<'a> core::ops::Mul<&'a SimpleBigint> for &'a SimpleBigint {
 impl<'a> core::ops::Sub<&'a SimpleBigint> for &'a SimpleBigint {
     type Output = SimpleBigint;
 
-    // Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/uint/sub.rs#L11
     fn sub(self, rhs: &'a SimpleBigint) -> SimpleBigint {
-        let mut borrow = 0;
-        let limbs = self
-            .zip_limbs_iter(rhs)
-            .map(|(&left, &right)| {
-                let (w, b) = sbb(left, right, borrow);
-                borrow = b;
-                w
-            })
-            .collect();
-
-        assert_eq!(borrow, 0, "attempted to subtract with underflow");
-
-        SimpleBigint(limbs)
+        // Use sub_assign
+        let mut tmp = self.clone();
+        tmp -= rhs;
+        tmp
     }
 }
 
+// Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/uint/sub.rs#L11
 impl<'a> core::ops::SubAssign<&'a SimpleBigint> for SimpleBigint {
     fn sub_assign(&mut self, rhs: &'a SimpleBigint) {
-        *self = &*self - rhs;
+        let mut borrow = 0;
+        self.0
+            .iter_mut()
+            .zip(rhs.0.iter().chain(core::iter::repeat(&0)))
+            .for_each(|(left, &right)| {
+                let (w, b) = sbb(*left, right, borrow);
+                borrow = b;
+                *left = w;
+            });
+
+        assert_eq!(borrow, 0, "attempted to subtract with underflow");
     }
 }
 
@@ -451,34 +452,39 @@ impl<'a> core::ops::Shr<u32> for &'a SimpleBigint {
     type Output = SimpleBigint;
 
     fn shr(self, rhs: u32) -> Self::Output {
+        // Use shr_assign
+        let mut tmp = self.clone();
+        tmp >>= rhs;
+        tmp
+    }
+}
+
+impl<'a> core::ops::ShrAssign<u32> for SimpleBigint {
+    fn shr_assign(&mut self, rhs: u32) {
         // We get rid of the rhs/BITS lowest limbs
-        let new_lowest_limb = rhs / Limb::BITS;
+        let new_lowest_limb = (rhs / Limb::BITS) as usize;
 
         let remaining_shift = rhs % Limb::BITS;
         // This covers all the bits that are shifted away
         let lower_bitmask = (Limb::from(1u8) << remaining_shift) - 1;
 
         // Now we just have to do a smaller shift for the remaining limbs
-        let mut carry = 0;
-        let mut new_limbs: Vec<Limb> = self
-            .0
-            .iter()
-            .skip(new_lowest_limb as usize)
-            .rev() // build the new value starting at the most significant limb
-            .map(|l| {
-                // Save the shifted bits
-                let next_carry = l & lower_bitmask;
-                // Shift the limb
-                let mut new_limb = l >> remaining_shift;
-                // Add in the carryover from the previous shift
-                new_limb |= carry << ((Limb::BITS - remaining_shift) % Limb::BITS);
+        let mut this_limb = self.0[new_lowest_limb];
+        for i in 0..self.0.len() - new_lowest_limb {
+            let next_limb = self.0.get(i + new_lowest_limb + 1).copied().unwrap_or(0);
 
-                carry = next_carry;
-                new_limb
-            })
-            .collect();
-        new_limbs.reverse(); // Make it big-endian
-        SimpleBigint(new_limbs)
+            // Get the bits that will be shifted away from the limb above
+            let bits_from_next_limb = next_limb & lower_bitmask;
+            // Shift this limb
+            let mut new_limb = this_limb >> remaining_shift;
+            // Add in the bits from the limba above
+            new_limb |= bits_from_next_limb << ((Limb::BITS - remaining_shift) % Limb::BITS);
+
+            self.0[i] = new_limb;
+            this_limb = next_limb;
+        }
+
+        self.0.truncate(self.0.len() - new_lowest_limb);
     }
 }
 
@@ -543,11 +549,18 @@ mod test {
 
             let shift_size = rng.gen_range(0..Limb::BITS * a.0.len() as u32);
             let shr = &a >> shift_size;
+            let shrassign = {
+                let mut tmp = a.clone();
+                tmp >>= shift_size;
+                tmp
+            };
 
             let ref_a = a.as_biguint();
             let ref_shr = ref_a >> shift_size;
 
             assert_eq!(shr, ref_shr);
+            assert_eq!(shrassign.0, shr.0, "{:x?} != {:x?}", shrassign.0, shr.0);
+            assert_eq!(shrassign, ref_shr);
         }
     }
 

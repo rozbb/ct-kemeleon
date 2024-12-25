@@ -104,7 +104,11 @@ fn divrem_by_qpow(mut x: SimpleBigint, pow: u32) -> (SimpleBigint, SimpleBigint)
     // This makes the multiplication smaller
     let preshift = (US[u_idx] >> 1) - 1;
     let postshift = US[u_idx] - preshift;
-    let mut quot = &(&(&x >> preshift) * &SIMPLE_SCALEDQPOWINVS[u_idx]) >> postshift;
+    let mut quot = {
+        let mut tmp = &(&x >> preshift) * &SIMPLE_SCALEDQPOWINVS[u_idx];
+        tmp >>= postshift;
+        tmp
+    };
     // TODO: justify this truncation (beyond "it works and produces faster mults")
     quot.truncate_to(x.num_limbs() / 2 + 1);
     // The quotient is at most the difference of the number of limbs of x and qpow, plus 1
