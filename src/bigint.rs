@@ -412,6 +412,28 @@ impl<'a> core::ops::Mul<&'a SimpleBigint> for &'a SimpleBigint {
     }
 }
 
+impl<'a> core::ops::MulAssign<&'a SimpleBigint> for SimpleBigint {
+    fn mul_assign(&mut self, rhs: &'a SimpleBigint) {
+        // Optimization: if the rhs is a single limb, we can do an in-place multiplication
+        if rhs.num_limbs() == 1 {
+            let lhs_len = self.num_limbs();
+            self.0.push(0);
+
+            // Multiply each limb by the single limb in the rhs
+            let rhs_limb = rhs.0[0];
+            let mut carry = 0;
+            for j in 0..lhs_len {
+                let (new_limb, new_carry) = mac(0, self.0[j], rhs_limb, carry);
+                self.0[j] = new_limb;
+                carry = new_carry;
+            }
+            self.0[lhs_len] = carry;
+        } else {
+            *self = &*self * rhs;
+        }
+    }
+}
+
 impl<'a> core::ops::Sub<&'a SimpleBigint> for &'a SimpleBigint {
     type Output = SimpleBigint;
 
@@ -524,15 +546,21 @@ mod test {
     fn mul() {
         let mut rng = rand::thread_rng();
 
-        for _ in 0..100 {
+        for _ in 0..200 {
             let a = rand_biguint(&mut rng);
             let b = rand_biguint(&mut rng);
             let prod = &a * &b;
+            let prodassign = {
+                let mut tmp = a.clone();
+                tmp *= &b;
+                tmp
+            };
 
             let ref_a = a.as_biguint();
             let ref_b = b.as_biguint();
             let ref_prod = &ref_a * &ref_b;
 
+            assert_eq!(prod.0, prodassign.0);
             assert_eq!(prod, ref_prod, "{ref_a} * {ref_b}");
         }
     }

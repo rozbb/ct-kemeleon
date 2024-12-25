@@ -105,7 +105,8 @@ fn divrem_by_qpow(mut x: SimpleBigint, pow: u32) -> (SimpleBigint, SimpleBigint)
     let preshift = (US[u_idx] >> 1) - 1;
     let postshift = US[u_idx] - preshift;
     let mut quot = {
-        let mut tmp = &(&x >> preshift) * &SIMPLE_SCALEDQPOWINVS[u_idx];
+        let mut tmp = &x >> preshift;
+        tmp *= &SIMPLE_SCALEDQPOWINVS[u_idx];
         tmp >>= postshift;
         tmp
     };
