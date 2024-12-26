@@ -1,5 +1,3 @@
-use core::ops::Not;
-
 use num_bigint::BigUint;
 use subtle::{
     Choice, ConditionallySelectable, ConstantTimeEq, ConstantTimeGreater, ConstantTimeLess,
@@ -24,19 +22,6 @@ pub(crate) const fn mac(a: Limb, b: Limb, c: Limb, carry: Limb) -> (Limb, Limb) 
     (ret as Limb, (ret >> Limb::BITS) as Limb)
 }
 
-// Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/primitives.rs#L20
-/// Computes `lhs + rhs + carry`, returning the result along with the new carry (0, 1, or 2).
-#[inline(always)]
-pub const fn adc(lhs: Limb, rhs: Limb, carry: Limb) -> (Limb, Limb) {
-    // We could use `Limb::overflowing_add()` here analogous to `overflowing_add()`,
-    // but this version seems to produce a slightly better assembly.
-    let a = lhs as WideLimb;
-    let b = rhs as WideLimb;
-    let carry = carry as WideLimb;
-    let ret = a + b + carry;
-    (ret as Limb, (ret >> Limb::BITS) as Limb)
-}
-
 // Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/primitives.rs#L39C1-L39C86
 /// Computes `self - (rhs + borrow)`, returning the result along with the new borrow.
 #[inline(always)]
@@ -48,144 +33,8 @@ pub(crate) const fn sbb(lhs: Limb, rhs: Limb, borrow: Limb) -> (Limb, Limb) {
     (ret as Limb, (ret >> Limb::BITS) as Limb)
 }
 
-// Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/uint/mul.rs#L16
-/// Schoolbook multiplication a.k.a. long multiplication, i.e. the traditional method taught in
-/// schools.
-///
-/// The most efficient method for small numbers.
-fn schoolbook_multiplication(lhs: &[Limb], rhs: &[Limb]) -> (SimpleBigint, SimpleBigint) {
-    let mut lo = vec![0 as Limb; lhs.len()];
-    let mut hi = vec![0 as Limb; rhs.len()];
-
-    let mut i = 0;
-    while i < lhs.len() {
-        let mut j = 0;
-        let mut carry = 0;
-        let xi = lhs[i];
-
-        while j < rhs.len() {
-            let k = i + j;
-
-            if k >= lhs.len() {
-                (hi[k - lhs.len()], carry) = mac(hi[k - lhs.len()], xi, rhs[j], carry);
-            } else {
-                (lo[k], carry) = mac(lo[k], xi, rhs[j], carry);
-            }
-
-            j += 1;
-        }
-
-        if i + j >= lhs.len() {
-            hi[i + j - lhs.len()] = carry;
-        } else {
-            lo[i + j] = carry;
-        }
-        i += 1;
-    }
-
-    (SimpleBigint(lo), SimpleBigint(hi))
-}
-
-/// Number of limbs, below which, we use schoolbook multiplication
-const KARATSUBA_THRESHOLD: usize = 10;
-
-// Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/uint/mul/karatsuba.rs#L37
-fn karatsuba_mul(lhs: &[Limb], rhs: &[Limb]) -> (SimpleBigint, SimpleBigint) {
-    // To do karatsuba, the LHS and RHS must be sufficiently large and approximately the same size
-    if lhs.len() <= KARATSUBA_THRESHOLD
-        || rhs.len() <= KARATSUBA_THRESHOLD
-        || lhs.len() < rhs.len() / 5
-        || rhs.len() < lhs.len() / 5
-    {
-        return schoolbook_multiplication(lhs, rhs);
-    }
-
-    // The expected return value is bigints with the same number of limbs as the inputs
-    if lhs.is_empty() {
-        return (SimpleBigint::zero(rhs.len()), SimpleBigint::zero(rhs.len()));
-    }
-    if rhs.is_empty() {
-        return (SimpleBigint::zero(lhs.len()), SimpleBigint::zero(lhs.len()));
-    }
-
-    let max_limbs = core::cmp::max(lhs.len(), rhs.len());
-    let half_size = max_limbs.div_ceil(2);
-    let (x0, x1) = if half_size > lhs.len() {
-        (lhs, [].as_slice())
-    } else {
-        lhs.split_at(half_size)
-    };
-    let (y0, y1) = if half_size > rhs.len() {
-        (rhs, [].as_slice())
-    } else {
-        rhs.split_at(half_size)
-    };
-
-    // Calculate z1 = (x0 - x1)(y1 - y0)
-    let mut l0 = SimpleBigint(vec![0; half_size]);
-    let mut l1 = SimpleBigint(vec![0; half_size]);
-    let mut l0b = 0;
-    let mut l1b = 0;
-    let mut i = 0;
-    while i < half_size {
-        (l0.0[i], l0b) = sbb(
-            x0.get(i).copied().unwrap_or(0),
-            x1.get(i).copied().unwrap_or(0),
-            l0b,
-        );
-        (l1.0[i], l1b) = sbb(
-            y1.get(i).copied().unwrap_or(0),
-            y0.get(i).copied().unwrap_or(0),
-            l1b,
-        );
-        i += 1;
-    }
-    let l0b_nonzero = Choice::from((l0b != 0) as u8);
-    let l1b_nonzero = Choice::from((l1b != 0) as u8);
-
-    l0 = SimpleBigint::conditional_select(&l0, &l0.wrapping_neg(), l0b_nonzero);
-    l1 = SimpleBigint::conditional_select(&l1, &l1.wrapping_neg(), l1b_nonzero);
-    let z1 = karatsuba_mul(&l0.0, &l1.0);
-    let z1_neg = l0b_nonzero ^ l1b_nonzero;
-
-    // Conditionally add or subtract z1•b depending on its sign
-    // res is the limbs of our result in little-endian order
-    let mut res = (
-        SimpleBigint::zero(half_size),
-        z1.0,
-        z1.1,
-        SimpleBigint::zero(half_size),
-    );
-    res.0 = SimpleBigint::conditional_select(&res.0, &(&res.0).not(), z1_neg);
-    res.1 = SimpleBigint::conditional_select(&res.1, &(&res.1).not(), z1_neg);
-    res.2 = SimpleBigint::conditional_select(&res.2, &(&res.2).not(), z1_neg);
-    res.3 = SimpleBigint::conditional_select(&res.3, &(&res.3).not(), z1_neg);
-
-    // Calculate z0 = x0•y0
-    let z0 = karatsuba_mul(x0, y0);
-    // Calculate z2 = x1•y1
-    let z2 = karatsuba_mul(x1, y1);
-
-    // Add z0 + (z0 + z2)•b + z2•b^2
-    let mut carry = Limb::conditional_select(&0, &1, z1_neg);
-    (res.0, carry) = res.0.adc(&z0.0, carry);
-    (res.1, carry) = res.1.adc(&z0.1, carry);
-    let mut carry2;
-    (res.1, carry2) = res.1.adc(&z0.0, 0);
-    (res.2, carry) = res.2.adc(&z0.1, carry.wrapping_add(carry2));
-    (res.1, carry2) = res.1.adc(&z2.0, 0);
-    (res.2, carry2) = res.2.adc(&z2.1, carry2);
-    carry = carry.wrapping_add(carry2);
-    (res.2, carry2) = res.2.adc(&z2.0, 0);
-    (res.3, _) = res.3.adc(&z2.1, carry.wrapping_add(carry2));
-
-    // Return (lo, hi) = ([res.0, res.1], [res.2, res.3])
-    res.0 .0.extend(res.1 .0);
-    res.2 .0.extend(res.3 .0);
-    (res.0, res.2)
-}
-
 impl SimpleBigint {
+    /// Returns a bigint representing 0 that has the given number of limbs
     pub(crate) fn zero(num_limbs: usize) -> Self {
         SimpleBigint(vec![0; num_limbs])
     }
@@ -206,54 +55,6 @@ impl SimpleBigint {
         // Assign the new limb based on the value
         self.0[limb_idx as usize].conditional_assign(&newlimb_when_true, value);
         self.0[limb_idx as usize].conditional_assign(&newlimb_when_false, !value);
-    }
-
-    pub(crate) fn increment(&mut self) {
-        // Add a limb in case this increment overflows
-        self.0.push(0);
-
-        // Add 1 to the least significant limb and carry
-        let mut carry = true;
-        for limb in self.0.iter_mut() {
-            let (new_limb, new_carry) = limb.overflowing_add(carry as Limb);
-            *limb = new_limb;
-            carry = new_carry;
-        }
-
-        // Sanity check: we cannot have overflown
-        debug_assert!(!carry);
-    }
-
-    // Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/uint/neg.rs#L5
-    /// Perform wrapping negation.
-    fn wrapping_neg(&self) -> Self {
-        let mut carry = 1;
-        SimpleBigint(
-            self.0
-                .iter()
-                .map(|l| {
-                    let r = (!l as WideLimb) + carry;
-                    carry = r >> Limb::BITS;
-                    r as Limb
-                })
-                .collect(),
-        )
-    }
-
-    // Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/uint/add.rs#L8C1-L22C6
-    /// Computes `a + b + carry`, returning the result along with the new carry.
-    #[inline(always)]
-    fn adc(&self, rhs: &Self, mut carry: Limb) -> (Self, Limb) {
-        let limbs = self
-            .zip_limbs_iter(rhs)
-            .map(|(a, b)| {
-                let (w, c) = adc(*a, *b, carry);
-                carry = c;
-                w
-            })
-            .collect();
-
-        (SimpleBigint(limbs), carry)
     }
 
     /// The number of limbs being used by this bigint
@@ -286,7 +87,7 @@ impl SimpleBigint {
         greater | equal_so_far
     }
 
-    fn conditional_select(a: &Self, b: &Self, choice: Choice) -> Self {
+    pub(crate) fn conditional_select(a: &Self, b: &Self, choice: Choice) -> Self {
         assert_eq!(a.num_limbs(), b.num_limbs());
 
         SimpleBigint(
@@ -295,6 +96,15 @@ impl SimpleBigint {
                 .map(|(a, b)| Limb::conditional_select(a, b, choice))
                 .collect(),
         )
+    }
+
+    pub(crate) fn conditional_assign(&mut self, b: &Self, choice: Choice) {
+        assert_eq!(self.num_limbs(), b.num_limbs());
+
+        self.0
+            .iter_mut()
+            .zip(b.0.iter())
+            .for_each(|(a, b)| a.conditional_assign(b, choice));
     }
 
     pub(crate) fn as_biguint(&self) -> BigUint {
@@ -314,22 +124,6 @@ impl SimpleBigint {
             let lo = x as u32;
             [lo, hi]
         })
-    }
-
-    /// Returns an iterator over the limbs of this bigint and the other bigint, padding the shorter
-    /// one with 0s.
-    fn zip_limbs_iter<'a>(
-        &'a self,
-        other: &'a SimpleBigint,
-    ) -> impl Iterator<Item = (&'a Limb, &'a Limb)> + 'a {
-        let zeros = core::iter::repeat(&0);
-        let max_len = core::cmp::max(self.0.len(), other.0.len());
-
-        self.0
-            .iter()
-            .chain(zeros.clone())
-            .zip(other.0.iter().chain(zeros))
-            .take(max_len)
     }
 
     /// Returns the reversed version of `zip_limbs_iter`
@@ -386,6 +180,24 @@ impl ConstantTimeGreater for SimpleBigint {
 impl ConstantTimeLess for SimpleBigint {
     fn ct_lt(&self, other: &Self) -> Choice {
         !self.ct_gte(other)
+    }
+}
+
+impl core::ops::AddAssign<u64> for SimpleBigint {
+    fn add_assign(&mut self, rhs: u64) {
+        // Add a limb in case this addition overflows
+        self.0.push(0);
+
+        // Add rhs to the least significant limb and carry it up
+        let mut carry = rhs;
+        for limb in self.0.iter_mut() {
+            let (new_limb, new_carry) = limb.overflowing_add(carry as Limb);
+            *limb = new_limb;
+            carry = new_carry as u64;
+        }
+
+        // Sanity check: we cannot have overflown
+        debug_assert!(carry == 0);
     }
 }
 
@@ -612,15 +424,17 @@ mod test {
     }
 
     #[test]
-    fn increment() {
+    fn add() {
         let mut rng = rand::thread_rng();
 
         for _ in 0..100 {
             let mut a = rand_biguint(&mut rng);
+            let b: u64 = rng.gen();
+
             let mut ref_a = a.as_biguint();
 
-            a.increment();
-            ref_a += 1u32;
+            a += b;
+            ref_a += b;
 
             assert_eq!(a, ref_a);
         }

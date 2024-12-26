@@ -4,6 +4,7 @@ use bigint::SimpleBigint;
 use lazy_static::lazy_static;
 use num_bigint::BigUint;
 use rand::Rng;
+use subtle::ConditionallySelectable;
 
 /// The prime modulus used in ML-KEM
 const MLKEM_Q: u16 = 3329;
@@ -56,17 +57,6 @@ pub fn vector_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Option
     }
 }
 
-/*
-// The absolute most naive implementation
-fn divrem_by_qpow(x: &BigUint, pow: u32) -> (BigUint, BigUint) {
-    let qpow = BigUint::from(MLKEM_Q).pow(2u32.pow(pow));
-    let quot = x / &qpow;
-    let rem = x - &(&quot * &qpow);
-
-    (quot, rem)
-}
-*/
-
 // Rather than dividing x by q (or a power thereof), we can multiply x by ⌊2^u / q⌋ for
 // sufficiently large u, then divide by 2^u (ie right-shift by u)
 // In addition, rather than using the same u for every x, we can use
@@ -75,6 +65,7 @@ lazy_static! {
     static ref QPOWS: Vec<BigUint> = (0..10)
         .map(|i| BigUint::from(MLKEM_Q).pow(2u32.pow(i)))
         .collect();
+    static ref TWOQPOWS: Vec<BigUint> = QPOWS.iter().map(|x| 2u8 * x).collect();
     static ref US: Vec<u32> = QPOWS
         .iter()
         .map(|qpow| 2 * (qpow.bits() + 1) as u32)
@@ -86,6 +77,13 @@ lazy_static! {
         .map(|(tpu, qpow)| tpu / qpow)
         .collect();
     static ref SIMPLE_QPOWS: Vec<SimpleBigint> = QPOWS.iter().map(SimpleBigint::from).collect();
+    // Bigints with the same number of limbs as SIMPLE_QPOWS, but all 0
+    static ref SIMPLE_QPOWS_ZEROS: Vec<SimpleBigint> = SIMPLE_QPOWS
+        .iter()
+        .map(|n| SimpleBigint::zero(n.num_limbs()))
+        .collect();
+    static ref SIMPLE_TWOQPOWS: Vec<SimpleBigint> =
+        TWOQPOWS.iter().map(SimpleBigint::from).collect();
     static ref SIMPLE_SCALEDQPOWINVS: Vec<SimpleBigint> =
         SCALEDQPOWINVS.iter().map(SimpleBigint::from).collect();
     static ref SIMPLE_TWOPOWUS: Vec<SimpleBigint> =
@@ -98,6 +96,8 @@ lazy_static! {
 fn divrem_by_qpow(mut x: SimpleBigint, pow: u32) -> (SimpleBigint, SimpleBigint) {
     let u_idx = pow as usize;
     let qpow = &SIMPLE_QPOWS[u_idx];
+    let two_qpow = &SIMPLE_TWOQPOWS[u_idx];
+    let zero = &SIMPLE_QPOWS_ZEROS[u_idx];
 
     // Rather than computing (x * qinvpow) >> shift, we can split the shift:
     //     ((x >> shift1) * qinvpow) >> shift2
@@ -119,14 +119,19 @@ fn divrem_by_qpow(mut x: SimpleBigint, pow: u32) -> (SimpleBigint, SimpleBigint)
     // The size of rem is the same as that of quot
     rem.truncate_to(quot.num_limbs());
 
-    if bool::from(rem.ct_gte(&qpow)) {
-        quot.increment();
-        rem -= &qpow;
-    }
-    if bool::from(rem.ct_gte(&qpow)) {
-        quot.increment();
-        rem -= &qpow;
-    }
+    // If rem >= qpow, then we need to subtract qpow to rem and increment quot
+    // If it's still >= qpow, then we need to do it again
+    let greater_than_two_qpow = rem.ct_gte(&two_qpow);
+    let greater_than_qpow = rem.ct_gte(&qpow);
+    // if rem > 2*qpow, quot += 2. Elsif rem > qpow, quot += 1. Else, do nothing
+    let mut add_to_quot = u64::conditional_select(&0, &1, greater_than_qpow);
+    add_to_quot.conditional_assign(&2, greater_than_two_qpow);
+    // if rem > 2*qpow, rem -= 2*qpow. Elsif rem > 2*qpow, rem -= qpow. Else, do nothing
+    let mut sub_from_rem = SimpleBigint::conditional_select(&zero, &qpow, greater_than_qpow);
+    sub_from_rem.conditional_assign(two_qpow, greater_than_two_qpow);
+
+    quot += add_to_quot;
+    rem -= &sub_from_rem;
 
     (quot, rem)
 }
