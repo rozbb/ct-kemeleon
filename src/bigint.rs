@@ -393,23 +393,6 @@ impl<'a> core::ops::Mul<&'a SimpleBigint> for &'a SimpleBigint {
     type Output = SimpleBigint;
 
     fn mul(self, rhs: Self) -> Self::Output {
-        // Concat zeros until the inputs are the same len and the len is an even number
-        // TODO: Fix Karatsuba mult so this isn't necessary
-        /*
-        let mut a = self.0.clone();
-        let mut b = rhs.0.clone();
-        let mut max_limbs = core::cmp::max(a.len(), b.len());
-        if max_limbs % 2 == 1 {
-            max_limbs += 1;
-        }
-        a.extend(core::iter::repeat(0).take(max_limbs - a.len()));
-        b.extend(core::iter::repeat(0).take(max_limbs - a.len()));
-
-        let (lo, hi) = karatsuba_mul(&a, &b);
-        */
-        //let (lo, hi) = schoolbook_multiplication(&self.0, &rhs.0);
-        //SimpleBigint([lo.0, hi.0].concat())
-
         let lhs_len = self.num_limbs();
         let mut out = vec![0; lhs_len + rhs.num_limbs()];
 
@@ -425,28 +408,6 @@ impl<'a> core::ops::Mul<&'a SimpleBigint> for &'a SimpleBigint {
         }
 
         SimpleBigint(out)
-    }
-}
-
-impl<'a> core::ops::MulAssign<&'a SimpleBigint> for SimpleBigint {
-    fn mul_assign(&mut self, rhs: &'a SimpleBigint) {
-        // Optimization: if the rhs is a single limb, we can do an in-place multiplication
-        if rhs.num_limbs() == 1 {
-            let lhs_len = self.num_limbs();
-            self.0.push(0);
-
-            // Multiply each limb by the single limb in the rhs
-            let rhs_limb = rhs.0[0];
-            let mut carry = 0;
-            for j in 0..lhs_len {
-                let (new_limb, new_carry) = mac(0, self.0[j], rhs_limb, carry);
-                self.0[j] = new_limb;
-                carry = new_carry;
-            }
-            self.0[lhs_len] = carry;
-        } else {
-            *self = &*self * rhs;
-        }
     }
 }
 
@@ -566,17 +527,11 @@ mod test {
             let a = rand_biguint(&mut rng);
             let b = rand_biguint(&mut rng);
             let prod = &a * &b;
-            let prodassign = {
-                let mut tmp = a.clone();
-                tmp *= &b;
-                tmp
-            };
 
             let ref_a = a.as_biguint();
             let ref_b = b.as_biguint();
             let ref_prod = &ref_a * &ref_b;
 
-            assert_eq!(prod.0, prodassign.0);
             assert_eq!(prod, ref_prod, "{ref_a} * {ref_b}");
         }
     }

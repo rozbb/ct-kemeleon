@@ -105,8 +105,7 @@ fn divrem_by_qpow(mut x: SimpleBigint, pow: u32) -> (SimpleBigint, SimpleBigint)
     let preshift = (US[u_idx] >> 1) - 1;
     let postshift = US[u_idx] - preshift;
     let mut quot = {
-        let mut tmp = &x >> preshift;
-        tmp *= &SIMPLE_SCALEDQPOWINVS[u_idx];
+        let mut tmp = &(&x >> preshift) * &SIMPLE_SCALEDQPOWINVS[u_idx];
         tmp >>= postshift;
         tmp
     };
@@ -231,6 +230,7 @@ pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
     // Change the base from q^N to q^(N/2) to q^(N/4), etc. until we get to q^4
     let mut cur_limbs = vec![repr];
     for pow in (2..log2_ceil(N)).rev() {
+        //println!("pow == {pow}");
         cur_limbs = lower_base_by(cur_limbs, pow);
     }
 
