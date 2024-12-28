@@ -4,7 +4,7 @@ use bigint::SimpleBigint;
 use lazy_static::lazy_static;
 use num_bigint::BigUint;
 use rand::Rng;
-use subtle::ConditionallySelectable;
+use subtle::{ConditionallySelectable, ConstantTimeLess};
 
 /// The prime modulus used in ML-KEM
 const MLKEM_Q: u16 = 3329;
@@ -161,7 +161,7 @@ fn lower_base_by(x: Vec<SimpleBigint>, pow: u32) -> Vec<SimpleBigint> {
 
 macro_rules! impl_native_base_lowering {
     ($smallnum:ty, $biggernum:ty, $biggerernum:ty, $qpow:expr, $fnname:ident) => {
-        /// Same thing as lower_base_by, but specialized to `x: Vec<$biggernum>` and `pow=0`
+        /// Same thing as lower_base_by, but specialized to `x: Vec<$biggernum>` and `pow=1` or `0`
         fn $fnname(x: Vec<$biggernum>, pow: u32) -> Vec<$smallnum> {
             // Divides x by q and returns (quotient, remainder)
             fn native_divrem_by_qpow(x: $biggernum, pow: u32) -> ($smallnum, $smallnum) {
@@ -169,6 +169,7 @@ macro_rules! impl_native_base_lowering {
 
                 let u_idx = pow as usize;
                 let qpow = SIMPLE_QPOWS[pow as usize].u64_limbs().next().unwrap() as $smallnum;
+                let two_qpow = qpow << 1;
                 let scaledinv = {
                     let mut it = SIMPLE_SCALEDQPOWINVS[u_idx].u64_limbs();
                     let ret = it.next().unwrap() as $biggernum;
@@ -184,14 +185,16 @@ macro_rules! impl_native_base_lowering {
                 let mut rem: $smallnum =
                     (x - &(quot as $biggernum * qpow as $biggernum)) as $smallnum;
 
-                if rem >= qpow {
-                    quot += 1;
-                    rem -= qpow;
-                }
-                if rem >= qpow {
-                    quot += 1;
-                    rem -= qpow;
-                }
+                let greater_than_two_qpow = !rem.ct_lt(&two_qpow);
+                let greater_than_qpow = !rem.ct_lt(&qpow);
+                let mut add_to_quot = <$smallnum>::conditional_select(&0, &1, greater_than_qpow);
+                add_to_quot.conditional_assign(&2, greater_than_two_qpow);
+                let mut sub_from_rem =
+                    <$smallnum>::conditional_select(&0, &qpow, greater_than_qpow);
+                sub_from_rem.conditional_assign(&two_qpow, greater_than_two_qpow);
+
+                quot += add_to_quot;
+                rem -= sub_from_rem;
 
                 (quot as $smallnum, rem as $smallnum)
             }
