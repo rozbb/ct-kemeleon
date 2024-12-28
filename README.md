@@ -8,3 +8,12 @@ This is useful when you want to hide the fact that a message contains cryptograp
 ## Warning
 
 None of the code in this repo has been audited by a third party. Use at your own peril.
+
+## License
+
+Licensed under either of
+
+ * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE))
+ * MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.
