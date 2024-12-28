@@ -1,4 +1,5 @@
 mod bigint;
+
 use bigint::SimpleBigint;
 
 use lazy_static::lazy_static;
@@ -16,16 +17,6 @@ pub fn rand_vec<const N: usize>(rng: &mut impl Rng) -> [u16; N] {
     }
 
     out
-}
-
-// A naive impl of ceil(log2(x))
-fn log2_ceil(x: usize) -> u32 {
-    let log2_floor = x.ilog2();
-    if 2usize.pow(log2_floor) == x {
-        log2_floor
-    } else {
-        log2_floor + 1
-    }
 }
 
 /// Attempts to run the Kemeleon encoding for the given NTT vector. Top few bits
@@ -116,8 +107,8 @@ fn divrem_by_qpow(mut x: SimpleBigint, pow: u32) -> (SimpleBigint, SimpleBigint)
 
     x.truncate_to(postshift as usize);
     let mut rem = &x - &(&quot * &qpow);
-    // The size of rem is the same as that of quot
-    rem.truncate_to(quot.num_limbs());
+    // The size of rem is the same as that of qpow, plus maybe 1 limb for rem overflow
+    rem.truncate_to(qpow.num_limbs() + 1);
 
     // If rem >= qpow, then we need to subtract qpow to rem and increment quot
     // If it's still >= qpow, then we need to do it again
@@ -237,11 +228,29 @@ pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
 
     // Change the base from q^N to q^(N/2) to q^(N/4), etc. until we get to q^4
     let mut cur_limbs = vec![repr];
-    for pow in (2..log2_ceil(N)).rev() {
-        //println!("pow == {pow}");
+
+    // The value i such that our next division will be q^(2^i)
+    let mut starting_pow = N.ilog2() - 1;
+
+    if N == 768 {
+        // If N == 768, then we need to lower the base to q^256 first. Divide by q^512
+        cur_limbs = lower_base_by(cur_limbs, 9);
+        // This leaves with one limb of base q^256, and one limb of base q^512. Divide the latter
+        // by q^256
+        let last_limb = cur_limbs.pop().unwrap();
+        let next_limbs = lower_base_by(vec![last_limb], 8);
+        cur_limbs.extend(next_limbs);
+
+        // Next power is q^128
+        starting_pow = 7;
+    }
+
+    // Now lower by halving powers of q
+    for pow in (2..=starting_pow).rev() {
         cur_limbs = lower_base_by(cur_limbs, pow);
     }
 
+    // Everything is now base q^4.
     // Now continue to lower the base, but use native arithmetic for a speedup.
     let pow = 1;
     // Convert existing bigints to u64
@@ -300,7 +309,6 @@ mod tests {
     }
 
     // TODO: make decoding work with non-pow-2 N
-    #[ignore]
     #[test]
     fn test_encode_decode_768() {
         test_encode_decode::<768>();
