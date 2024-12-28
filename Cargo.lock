@@ -173,6 +173,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a81dae078cea95a014a339291cec439d2f232ebe854a9d672b796c6afafa9b7"
 
 [[package]]
+name = "ct-kemeleon"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "lazy_static",
+ "num-bigint",
+ "num-traits",
+ "rand",
+ "subtle",
+]
+
+[[package]]
 name = "either"
 version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -484,18 +496,6 @@ dependencies = [
  "memchr",
  "ryu",
  "serde",
-]
-
-[[package]]
-name = "simple-kemeleon"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "lazy_static",
- "num-bigint",
- "num-traits",
- "rand",
- "subtle",
 ]
 
 [[package]]

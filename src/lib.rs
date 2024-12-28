@@ -21,6 +21,7 @@ pub fn rand_vec<const N: usize>(rng: &mut impl Rng) -> [u16; N] {
 
 /// Attempts to run the Kemeleon encoding for the given NTT vector. Top few bits
 /// get set to random.
+// TODO: Optimize by using q^(2^i) bases, just like in decode
 pub fn vector_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Option<Vec<u8>> {
     // Compute Σᵢ qⁱ vᵢ
     let mut sum = BigUint::ZERO;
@@ -215,6 +216,7 @@ impl_native_base_lowering!(u32, u64, u128, 1, u64_lower_base_by);
 /// Undoes Kemeleon encoding
 pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
     // Parse the bytes and clear the top few bits bc we set them to be random
+    // TODO: define a from_bytes method for SimpleBigint
     let mut repr = SimpleBigint::from(BigUint::from_bytes_be(bytes));
     // Top bit (0-indexed) is ⌈log₂(q^kn + 1)⌉ - 1. n=256 in ML-KEM
     let top_bit_idx = ((N as f64) * (MLKEM_Q as f64).log2()).ceil() as u64 - 1;

@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use simple_kemeleon::*;
+use ct_kemeleon::*;
 
 fn encode_decode_with_n<const N: usize>(c: &mut Criterion) {
     let mut rng = rand::thread_rng();
