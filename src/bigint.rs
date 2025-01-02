@@ -211,23 +211,8 @@ impl SimpleBigint {
         SimpleBigint(out)
     }
 
-    /// Returns an iterator over the limbs of this bigint and the other bigint, padding the shorter
-    /// one with 0s.
-    fn zip_limbs_iter<'a>(
-        &'a self,
-        other: &'a SimpleBigint,
-    ) -> impl Iterator<Item = (&'a Limb, &'a Limb)> + 'a {
-        let zeros = core::iter::repeat(&0);
-        let max_len = core::cmp::max(self.0.len(), other.0.len());
-
-        self.0
-            .iter()
-            .chain(zeros.clone())
-            .zip(other.0.iter().chain(zeros))
-            .take(max_len)
-    }
-
-    /// Returns the reversed version of `zip_limbs_iter`
+    /// Returns a reversed iterator over the limbs of this bigint and the other bigint, padding the
+    /// shorter one with 0s.
     fn zip_limbs_iter_rev<'a>(
         &'a self,
         other: &'a SimpleBigint,
