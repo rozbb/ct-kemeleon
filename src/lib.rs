@@ -169,7 +169,7 @@ fn divrem_by_qpow(mut x: SimpleBigint, pow: u32) -> (SimpleBigint, SimpleBigint)
 
 /// Given a sequence of limbs x in big-endian order in base b, returns a sequence of limbs in
 /// big-endian order in base b*q^(2^pow)
-fn raise_base_by(x: Vec<SimpleBigint>, pow: u32) -> Vec<SimpleBigint> {
+fn raise_base_by(x: &[SimpleBigint], pow: u32) -> Vec<SimpleBigint> {
     assert!(x.len() % 2 == 0);
 
     let mut out = Vec::with_capacity(x.len() / 2);
@@ -307,14 +307,31 @@ fn bigint_encode(v: &[u16]) -> SimpleBigint {
     let mut cur_limbs: Vec<SimpleBigint> =
         v.iter().map(|&x| SimpleBigint::from(x as u64)).collect();
 
-    let N = v.len();
-    assert!(N.is_power_of_two());
-    for pow in 0..N.ilog2() {
-        let next_limbs = raise_base_by(cur_limbs, pow);
+    // Raise the power until we cannot raise anymore. Or if the input is 768 elements (ie not a
+    // power of two), raise until we have 3 elements left, each of magnitude ~q^256 = q^(2^8).
+    let len = v.len();
+    let ending_power = if len == 768 { 8 } else { len.ilog2() };
+    for pow in 0..ending_power {
+        let next_limbs = raise_base_by(&cur_limbs, pow);
         cur_limbs = next_limbs;
     }
-    assert_eq!(cur_limbs.len(), 1);
 
+    // If the length isn't a power of two then we have one more operation to do.
+    // Take the three elements in cur_limbs and make them into 1 bigint
+    if len == 768 {
+        // We will calculate q^512 a0 + q^256 a1 + a2
+        // First calculate q^256 a1 + a2
+        let lower_limb = raise_base_by(&cur_limbs[1..], 8);
+        assert_eq!(lower_limb.len(), 1);
+
+        // Now the final sum. Calculate q^512 a0
+        let mut final_out = &cur_limbs[0] * &SIMPLE_QPOWS[9];
+        // Add in the rest of the limbs
+        final_out += &lower_limb[0];
+        cur_limbs = vec![final_out];
+    }
+
+    assert_eq!(cur_limbs.len(), 1);
     core::mem::take(&mut cur_limbs[0])
 }
 
