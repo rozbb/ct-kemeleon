@@ -24,9 +24,8 @@ pub fn rand_vec<const N: usize>(rng: &mut impl Rng) -> [u16; N] {
 /// get set to random.
 // We say "Kemeleon1" to refer to the rejection sampling variant of Kemeleon, whereby a given
 // public key or ciphertext may fail encoding (triggering a retry)
-// TODO: Optimize by using q^(2^i) bases, just like in decode
 pub fn kemeleon1_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Option<Vec<u8>> {
-    let mut sum = bigint_encode(v).as_biguint();
+    let mut sum = bigint_encode(v);
 
     // Check if the top bit is set. If not, then this input can be encoded
     // Top bit (0-indexed) is ⌈log₂(q^N + 1)⌉ - 1
@@ -34,13 +33,13 @@ pub fn kemeleon1_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Opt
     // Need to pad to a byte boundary
     let next_byte_boundary = top_bit_idx + (8 - (top_bit_idx % 8) % 8);
 
-    if !sum.bit(top_bit_idx) {
+    if !sum.get_bit(top_bit_idx) {
         // We need the number of bits to be a multiple of 8. So set the remaining bits to
         // random values
         for i in top_bit_idx..next_byte_boundary {
             sum.set_bit(i, rng.gen());
         }
-        Some(sum.to_bytes_be())
+        Some(sum.to_bytes_le().collect())
     } else {
         None
     }
@@ -83,9 +82,8 @@ pub fn kemeleon2_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Vec
     let k = SimpleBigint::from(rng.gen_range(0..=ub));
     let kq = &k * &SIMPLE_QPOWS[pow as usize];
 
-    // TODO: define to_bytes_be for SimpleBigint
     let out = &sum + &kq;
-    out.as_biguint().to_bytes_be()
+    out.to_bytes_le().collect()
 }
 
 // Rather than dividing x by q (or a power thereof), we can multiply x by ⌊2^u / q⌋ for
@@ -271,8 +269,7 @@ impl_native_base_lowering!(u32, u64, u128, 1, u64_lower_base_by);
 /// Undoes Kemeleon1 encoding
 pub fn kemeleon1_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
     // Parse the bytes and clear the top few bits bc we set them to be random
-    // TODO: define a from_bytes method for SimpleBigint
-    let mut repr = SimpleBigint::from(BigUint::from_bytes_be(bytes));
+    let mut repr = SimpleBigint::from_bytes_le(bytes);
     // Top bit (0-indexed) is ⌈log₂(q^kn + 1)⌉ - 1. n=256 in ML-KEM
     let top_bit_idx = ((N as f64) * (MLKEM_Q as f64).log2()).ceil() as u64 - 1;
     // Need to pad to a byte boundary
@@ -294,8 +291,7 @@ pub fn kemeleon2_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
     let pow = N.ilog2();
 
     // Parse the bytes and clear the blind by modding by the correct power of q
-    // TODO: define a from_bytes method for SimpleBigint
-    let repr = SimpleBigint::from(BigUint::from_bytes_be(bytes));
+    let repr = SimpleBigint::from_bytes_le(bytes);
     let (_, rem) = divrem_by_qpow(repr, pow);
 
     // Now decode the unblinded integer

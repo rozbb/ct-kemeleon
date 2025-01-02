@@ -68,23 +68,38 @@ impl SimpleBigint {
     pub(crate) fn set_bit(&mut self, bit: u64, value: bool) {
         let value = Choice::from(value as u8);
         // Find the limb and bit index
-        let limb_idx = bit / Limb::BITS as u64;
-        let bit_idx = bit % Limb::BITS as u64;
+        let limb_idx = (bit / Limb::BITS as u64) as usize;
+        let bit_idx = (bit % Limb::BITS as u64) as usize;
 
         // If the bit is beyond the highest limb, add limbs
-        if limb_idx as usize >= self.0.len() {
-            let num_limbs_to_extend = limb_idx as usize - self.0.len();
+        if limb_idx >= self.0.len() {
+            let num_limbs_to_extend = limb_idx - self.0.len();
             self.0
                 .extend(core::iter::repeat(0).take(num_limbs_to_extend));
         }
 
         // Compute the new limb for when value is 0 or 1
-        let newlimb_when_true = self.0[limb_idx as usize] | (1 << bit_idx);
-        let newlimb_when_false = self.0[limb_idx as usize] & !(1 << bit_idx);
+        let newlimb_when_true = self.0[limb_idx] | (1 << bit_idx);
+        let newlimb_when_false = self.0[limb_idx] & !(1 << bit_idx);
 
         // Assign the new limb based on the value
-        self.0[limb_idx as usize].conditional_assign(&newlimb_when_true, value);
-        self.0[limb_idx as usize].conditional_assign(&newlimb_when_false, !value);
+        self.0[limb_idx].conditional_assign(&newlimb_when_true, value);
+        self.0[limb_idx].conditional_assign(&newlimb_when_false, !value);
+    }
+
+    pub(crate) fn get_bit(&self, bit: u64) -> bool {
+        // Find the limb and bit index
+        let limb_idx = (bit / Limb::BITS as u64) as usize;
+        let bit_idx = (bit % Limb::BITS as u64) as usize;
+
+        assert!(
+            limb_idx < self.0.len(),
+            "tried to retreive bit that doesn't exist"
+        );
+
+        // Return true iff the bitmask on the specified limb is nonzero
+        let bitmask = 1 << bit_idx;
+        self.0[limb_idx] & bitmask != 0
     }
 
     /// The number of limbs being used by this bigint
@@ -156,16 +171,44 @@ impl SimpleBigint {
 
     /// Returns a little-endian iterator of the u64 limbs representing this bigint
     pub(crate) fn u64_limbs(&self) -> impl ExactSizeIterator<Item = u64> + '_ {
+        // This only works when limbs are u64
+        assert_eq!(Limb::BITS, 64);
         self.0.iter().copied()
     }
 
     /// Returns a little-endian iterator of the u32 limbs representing this bigint
     pub(crate) fn u32_limbs(&self) -> impl Iterator<Item = u32> + '_ {
+        // This only works when limbs are u64
+        assert_eq!(Limb::BITS, 64);
         self.0.iter().flat_map(|&x| {
             let hi = (x >> 32) as u32;
             let lo = x as u32;
             [lo, hi]
         })
+    }
+
+    /// Returns a little-endian iterator of the u8 limbs representing this bigint
+    pub(crate) fn to_bytes_le(&self) -> impl Iterator<Item = u8> + '_ {
+        self.0.iter().flat_map(|&x| x.to_le_bytes())
+    }
+
+    pub(crate) fn from_bytes_le(bytes: &[u8]) -> Self {
+        let limb_bytes = Limb::BITS as usize / 8;
+        let mut num_limbs = bytes.len() / limb_bytes;
+        if bytes.len() % limb_bytes != 0 {
+            num_limbs += 1;
+        }
+
+        // Convert each chunk of bytes into a limb, then push the limb
+        let mut out = Vec::with_capacity(num_limbs);
+        for c in bytes.chunks(limb_bytes) {
+            let mut buf = [0u8; Limb::BITS as usize / 8];
+            (&mut buf[..c.len()]).copy_from_slice(c);
+            let limb = Limb::from_le_bytes(buf);
+            out.push(limb);
+        }
+
+        SimpleBigint(out)
     }
 
     /// Returns an iterator over the limbs of this bigint and the other bigint, padding the shorter
@@ -485,6 +528,22 @@ mod test {
     }
 
     #[test]
+    fn get_bit() {
+        let mut rng = rand::thread_rng();
+
+        for _ in 0..100 {
+            let a = rand_biguint(&mut rng);
+            let ref_a = a.as_biguint();
+            if a.0.len() < 1 {
+                continue;
+            }
+            let bit_idx = rng.gen_range(0..Limb::BITS as u64 * a.0.len() as u64);
+
+            assert_eq!(a.get_bit(bit_idx), ref_a.bit(bit_idx));
+        }
+    }
+
+    #[test]
     fn set_bit() {
         let mut rng = rand::thread_rng();
 
@@ -495,11 +554,11 @@ mod test {
                 continue;
             }
 
-            let bit = rng.gen_range(0..Limb::BITS as u64 * a.0.len() as u64);
+            let bit_idx = rng.gen_range(0..Limb::BITS as u64 * a.0.len() as u64);
             let value = rng.gen_bool(0.5);
 
-            a.set_bit(bit, value);
-            ref_a.set_bit(bit, value);
+            a.set_bit(bit_idx, value);
+            ref_a.set_bit(bit_idx, value);
 
             assert_eq!(a, ref_a);
         }
