@@ -10,10 +10,11 @@ use subtle::{ConditionallySelectable, ConstantTimeLess};
 /// The prime modulus used in ML-KEM
 const MLKEM_Q: u16 = 3329;
 
+// Test/bench helper. Returns an array of random numbers in [0, MLKEM_Q)
 pub fn rand_vec<const N: usize>(rng: &mut impl Rng) -> [u16; N] {
     let mut out = [0u16; N];
     for coeff in out.iter_mut().rev() {
-        *coeff = rng.gen::<u16>() % MLKEM_Q;
+        *coeff = rng.gen_range(0..MLKEM_Q);
     }
 
     out
@@ -53,7 +54,7 @@ pub fn kemeleon1_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Opt
 
 // We say "Kemeleon2" to refer to the non-rejection sampling variant of Kemeleon, whereby a given
 // public key or ciphertext can always be encoded (at the cost of ~16B of overhead).
-pub fn kemeleon2_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> SimpleBigint {
+pub fn kemeleon2_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Vec<u8> {
     // We only support vectors of size 256 right now
     assert_eq!(N, 256);
 
@@ -70,12 +71,14 @@ pub fn kemeleon2_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Sim
     assert!(N.is_power_of_two());
     let pow = N.ilog2();
 
-    // We will compute a + kQ, where k is uniformly chosen from [0, ⌊(2^(n+t) - u) / Q⌋] and
-    // Q = q^N, n = ⌈log₂ Q⌉ = 2996, and t = 127
+    // We will compute a + kQ, where k is uniformly chosen from [0, ⌊(2^(r+t) - u) / Q⌋] and
+    // Q = q^N, r = ⌈log₂ Q⌉ = 2996, and t = 127
+    let r = 2996;
+    let t = 127;
 
     let ub = {
-        // Compute 2^(n+128) - u
-        let mut twopow = SimpleBigint::twopow(N as u32 + 128);
+        // Compute 2^(n+t) - u
+        let mut twopow = SimpleBigint::twopow(r + t);
         twopow -= &sum;
         assert!(N.is_power_of_two());
         // Divide by q^N = q^(2^(log2(N)))
@@ -86,14 +89,17 @@ pub fn kemeleon2_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Sim
         let mut it = ub.u128_limbs();
         let out = it.next().unwrap();
         // Make sure this bigint was < 2^128
-        assert!(it.all(|x| x == 0));
+        debug_assert!(it.all(|x| x == 0));
         out
     };
 
+    // TODO: replace gen_range with something constant-time
     let k = SimpleBigint::from(rng.gen_range(0..=ub));
     let kq = &k * &SIMPLE_QPOWS[pow as usize];
 
-    &sum + &kq
+    // TODO: define to_bytes_be for SimpleBigint
+    let out = &sum + &kq;
+    out.as_biguint().to_bytes_be()
 }
 
 // Rather than dividing x by q (or a power thereof), we can multiply x by ⌊2^u / q⌋ for
@@ -275,8 +281,29 @@ pub fn kemeleon1_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
         repr.set_bit(i, false);
     }
 
+    // Decode the bigint
+    bigint_decode(repr)
+}
+
+/// Undoes Kemeleon1 encoding
+pub fn kemeleon2_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
+    // This only works for power-of-two N for now
+    assert!(N.is_power_of_two());
+    let pow = N.ilog2();
+
+    // Parse the bytes and clear the blind by modding by the correct power of q
+    // TODO: define a from_bytes method for SimpleBigint
+    let repr = SimpleBigint::from(BigUint::from_bytes_be(bytes));
+    let (_, rem) = divrem_by_qpow(repr, pow);
+
+    // Now decode the unblinded integer
+    bigint_decode(rem)
+}
+
+/// Given a bigint, returns the sequence of mod-q values that were used in its encoding
+fn bigint_decode<const N: usize>(x: SimpleBigint) -> [u16; N] {
     // Change the base from q^N to q^(N/2) to q^(N/4), etc. until we get to q^4
-    let mut cur_limbs = vec![repr];
+    let mut cur_limbs = vec![x];
 
     // The value i such that our next division will be q^(2^i)
     let mut starting_pow = N.ilog2() - 1;
@@ -352,9 +379,31 @@ mod tests {
         assert!(num_encoded > 0);
     }
 
+    fn test_kemleon2_round_trip<const N: usize>() {
+        let mut rng = rand::thread_rng();
+
+        // Make random vectors and round-trip encode them
+        for i in 0..1000 {
+            let v = rand_vec::<N>(&mut rng);
+            let encoded = kemeleon2_encode(&mut rng, &v);
+            let decoded = kemeleon2_decode(&encoded);
+            let diff = v
+                .iter()
+                .zip(decoded.iter())
+                .map(|(x, y)| if x > y { x - y } else { y - x })
+                .collect::<Vec<_>>();
+            assert_eq!(v, decoded, "iteration {i}: diff is {:?}", diff);
+        }
+    }
+
     #[test]
     fn kemeleon1_512() {
         test_kemleon1_round_trip::<512>();
+    }
+
+    #[test]
+    fn kemeleon2_256() {
+        test_kemleon2_round_trip::<256>();
     }
 
     #[test]
