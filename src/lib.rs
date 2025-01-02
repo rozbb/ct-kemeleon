@@ -5,7 +5,7 @@ use bigint::SimpleBigint;
 use lazy_static::lazy_static;
 use num_bigint::BigUint;
 use rand::Rng;
-use subtle::{ConditionallySelectable, ConstantTimeLess};
+use subtle::{Choice, ConditionallySelectable, ConstantTimeLess};
 
 /// The prime modulus used in ML-KEM
 const MLKEM_Q: u16 = 3329;
@@ -15,6 +15,22 @@ pub fn rand_vec<const N: usize>(rng: &mut impl Rng) -> [u16; N] {
     let mut out = [0u16; N];
     for coeff in out.iter_mut().rev() {
         *coeff = rng.gen_range(0..MLKEM_Q);
+    }
+
+    out
+}
+
+/// Generates an element in [0, ub] in constant time. We expect ub >= 2^127.5, so we don't have
+/// to try too many times.
+fn ct_gen_range(rng: &mut impl Rng, ub: u128) -> u128 {
+    let mut out = 0u128;
+    // If we sample a random x, the likelihood x <= ub is at least 2^127.5 / 2^128 = 2^-.5
+    // The likelihood that x >= ub is thus at most 1 - 2^-.5.
+    // The likelihood of failure 46 times in a row is < 2^-81.
+    for _ in 0..46 {
+        let x = rng.gen();
+        let satisfied = Choice::from((x <= ub) as u8);
+        out.conditional_assign(&x, satisfied);
     }
 
     out
@@ -79,7 +95,7 @@ pub fn kemeleon2_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Vec
     };
 
     // TODO: replace gen_range with something constant-time
-    let k = SimpleBigint::from(rng.gen_range(0..=ub));
+    let k = SimpleBigint::from(ct_gen_range(rng, ub));
     let kq = &k * &SIMPLE_QPOWS[pow as usize];
 
     let out = &sum + &kq;
