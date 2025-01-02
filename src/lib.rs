@@ -21,8 +21,10 @@ pub fn rand_vec<const N: usize>(rng: &mut impl Rng) -> [u16; N] {
 
 /// Attempts to run the Kemeleon encoding for the given NTT vector. Top few bits
 /// get set to random.
+// We say "Kemeleon1" to refer to the rejection sampling variant of Kemeleon, whereby a given
+// public key or ciphertext may fail encoding (triggering a retry)
 // TODO: Optimize by using q^(2^i) bases, just like in decode
-pub fn vector_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Option<Vec<u8>> {
+pub fn kemeleon1_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Option<Vec<u8>> {
     // Compute Σᵢ qⁱ vᵢ
     let mut sum = BigUint::ZERO;
 
@@ -47,6 +49,51 @@ pub fn vector_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Option
     } else {
         None
     }
+}
+
+// We say "Kemeleon2" to refer to the non-rejection sampling variant of Kemeleon, whereby a given
+// public key or ciphertext can always be encoded (at the cost of ~16B of overhead).
+pub fn kemeleon2_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> SimpleBigint {
+    // We only support vectors of size 256 right now
+    assert_eq!(N, 256);
+
+    // Compute a = Σᵢ qⁱ vᵢ
+    let mut sum = BigUint::ZERO;
+
+    for coeff in v.iter() {
+        sum *= MLKEM_Q;
+        sum += *coeff;
+    }
+    let sum = SimpleBigint::from(sum);
+
+    // Get pow such that N = 2^pow
+    assert!(N.is_power_of_two());
+    let pow = N.ilog2();
+
+    // We will compute a + kQ, where k is uniformly chosen from [0, ⌊(2^(n+t) - u) / Q⌋] and
+    // Q = q^N, n = ⌈log₂ Q⌉ = 2996, and t = 127
+
+    let ub = {
+        // Compute 2^(n+128) - u
+        let mut twopow = SimpleBigint::twopow(N as u32 + 128);
+        twopow -= &sum;
+        assert!(N.is_power_of_two());
+        // Divide by q^N = q^(2^(log2(N)))
+        divrem_by_qpow(twopow, pow).0
+    };
+    // Convert from bigint to u128
+    let ub = {
+        let mut it = ub.u128_limbs();
+        let out = it.next().unwrap();
+        // Make sure this bigint was < 2^128
+        assert!(it.all(|x| x == 0));
+        out
+    };
+
+    let k = SimpleBigint::from(rng.gen_range(0..=ub));
+    let kq = &k * &SIMPLE_QPOWS[pow as usize];
+
+    &sum + &kq
 }
 
 // Rather than dividing x by q (or a power thereof), we can multiply x by ⌊2^u / q⌋ for
@@ -213,8 +260,8 @@ macro_rules! impl_native_base_lowering {
 impl_native_base_lowering!(u16, u32, u64, 0, u32_lower_base_by);
 impl_native_base_lowering!(u32, u64, u128, 1, u64_lower_base_by);
 
-/// Undoes Kemeleon encoding
-pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
+/// Undoes Kemeleon1 encoding
+pub fn kemeleon1_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
     // Parse the bytes and clear the top few bits bc we set them to be random
     // TODO: define a from_bytes method for SimpleBigint
     let mut repr = SimpleBigint::from(BigUint::from_bytes_be(bytes));
@@ -281,17 +328,17 @@ pub fn vector_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
 mod tests {
     use super::*;
 
-    fn test_encode_decode<const N: usize>() {
+    fn test_kemleon1_round_trip<const N: usize>() {
         let mut rng = rand::thread_rng();
 
         // Make random vectors and round-trip encode them
         let mut num_encoded = 0;
         for i in 0..1000 {
             let v = rand_vec::<N>(&mut rng);
-            let encoded = vector_encode(&mut rng, &v);
+            let encoded = kemeleon1_encode(&mut rng, &v);
             if let Some(bytes) = encoded {
                 num_encoded += 1;
-                let decoded = vector_decode(&bytes);
+                let decoded = kemeleon1_decode(&bytes);
                 let diff = v
                     .iter()
                     .zip(decoded.iter())
@@ -306,18 +353,17 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_decode_512() {
-        test_encode_decode::<512>();
-    }
-
-    // TODO: make decoding work with non-pow-2 N
-    #[test]
-    fn test_encode_decode_768() {
-        test_encode_decode::<768>();
+    fn kemeleon1_512() {
+        test_kemleon1_round_trip::<512>();
     }
 
     #[test]
-    fn test_encode_decode_1024() {
-        test_encode_decode::<1024>();
+    fn kemeleon1_768() {
+        test_kemleon1_round_trip::<768>();
+    }
+
+    #[test]
+    fn kemeleon1_1024() {
+        test_kemleon1_round_trip::<1024>();
     }
 }

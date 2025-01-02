@@ -22,6 +22,17 @@ pub(crate) const fn mac(a: Limb, b: Limb, c: Limb, carry: Limb) -> (Limb, Limb) 
     (ret as Limb, (ret >> Limb::BITS) as Limb)
 }
 
+// Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/primitives.rs#L20
+/// Computes `lhs + rhs + carry`, returning the result along with the new carry (0, 1, or 2).
+#[inline(always)]
+pub const fn adc(lhs: Limb, rhs: Limb, carry: Limb) -> (Limb, Limb) {
+    let a = lhs as WideLimb;
+    let b = rhs as WideLimb;
+    let carry = carry as WideLimb;
+    let ret = a + b + carry;
+    (ret as Limb, (ret >> Limb::BITS) as Limb)
+}
+
 // Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/primitives.rs#L39C1-L39C86
 /// Computes `self - (rhs + borrow)`, returning the result along with the new borrow.
 #[inline(always)]
@@ -39,14 +50,33 @@ impl SimpleBigint {
         SimpleBigint(vec![0; num_limbs])
     }
 
+    /// Returns a bigint representing 2^pow
+    pub(crate) fn twopow(pow: u32) -> Self {
+        // The number of leading zeros for this power of two representation
+        let num_zero_limbs = (pow / Limb::BITS) as usize;
+        // Calculate the most significant limb
+        let remaining_shift = pow % Limb::BITS;
+        let last_limb = 1 << remaining_shift;
+
+        // Construct the bigint
+        let mut out = Vec::with_capacity(num_zero_limbs + 1);
+        out.extend(core::iter::repeat(0).take(num_zero_limbs));
+        out.push(last_limb);
+        SimpleBigint(out)
+    }
+
     pub(crate) fn set_bit(&mut self, bit: u64, value: bool) {
         let value = Choice::from(value as u8);
         // Find the limb and bit index
         let limb_idx = bit / Limb::BITS as u64;
         let bit_idx = bit % Limb::BITS as u64;
 
-        // We don't support setting bits beyond the highest limb
-        assert!((limb_idx as usize) < self.0.len());
+        // If the bit is beyond the highest limb, add limbs
+        if limb_idx as usize >= self.0.len() {
+            let num_limbs_to_extend = limb_idx as usize - self.0.len();
+            self.0
+                .extend(core::iter::repeat(0).take(num_limbs_to_extend));
+        }
 
         // Compute the new limb for when value is 0 or 1
         let newlimb_when_true = self.0[limb_idx as usize] | (1 << bit_idx);
@@ -112,6 +142,18 @@ impl SimpleBigint {
         BigUint::from_slice(&self.u32_limbs().collect::<Vec<_>>())
     }
 
+    /// Returns a little-endian iterator of the u128 limbs representing this bigint
+    pub(crate) fn u128_limbs(&self) -> impl ExactSizeIterator<Item = u128> + '_ {
+        // This only works when limbs are 64 bits
+        assert_eq!(Limb::BITS, 64);
+
+        self.0.chunks(2).map(|c| {
+            let lo = c[0] as u128;
+            let hi = c.get(1).copied().unwrap_or(0) as u128;
+            lo | (hi << 64)
+        })
+    }
+
     /// Returns a little-endian iterator of the u64 limbs representing this bigint
     pub(crate) fn u64_limbs(&self) -> impl ExactSizeIterator<Item = u64> + '_ {
         self.0.iter().copied()
@@ -124,6 +166,22 @@ impl SimpleBigint {
             let lo = x as u32;
             [lo, hi]
         })
+    }
+
+    /// Returns an iterator over the limbs of this bigint and the other bigint, padding the shorter
+    /// one with 0s.
+    fn zip_limbs_iter<'a>(
+        &'a self,
+        other: &'a SimpleBigint,
+    ) -> impl Iterator<Item = (&'a Limb, &'a Limb)> + 'a {
+        let zeros = core::iter::repeat(&0);
+        let max_len = core::cmp::max(self.0.len(), other.0.len());
+
+        self.0
+            .iter()
+            .chain(zeros.clone())
+            .zip(other.0.iter().chain(zeros))
+            .take(max_len)
     }
 
     /// Returns the reversed version of `zip_limbs_iter`
@@ -180,6 +238,27 @@ impl ConstantTimeGreater for SimpleBigint {
 impl ConstantTimeLess for SimpleBigint {
     fn ct_lt(&self, other: &Self) -> Choice {
         !self.ct_gte(other)
+    }
+}
+
+impl<'a> core::ops::Add<&'a SimpleBigint> for &'a SimpleBigint {
+    type Output = SimpleBigint;
+
+    fn add(self, rhs: &'a SimpleBigint) -> Self::Output {
+        let mut out = vec![0; core::cmp::max(self.num_limbs(), rhs.num_limbs()) + 1];
+        let mut carry = 0;
+        self.zip_limbs_iter(rhs)
+            .zip(out.iter_mut())
+            .for_each(|((a, b), out)| {
+                let (sum, new_carry) = adc(*a, *b, carry);
+                *out = sum;
+                carry = new_carry;
+            });
+
+        // Add the carry if there is one
+        out.last_mut().map(|last| *last = carry);
+
+        SimpleBigint(out)
     }
 }
 
@@ -299,6 +378,16 @@ impl<'a> core::ops::ShrAssign<u32> for SimpleBigint {
     }
 }
 
+impl From<u128> for SimpleBigint {
+    fn from(value: u128) -> Self {
+        // This only works when limbs are 64 bits
+        assert_eq!(Limb::BITS, 64);
+        let lo = value as u64;
+        let hi = (value >> 64) as u64;
+        SimpleBigint(vec![lo, hi])
+    }
+}
+
 impl<'a> From<&'a BigUint> for SimpleBigint {
     fn from(value: &'a BigUint) -> Self {
         let limbs = BigUint::to_u64_digits(value);
@@ -315,7 +404,7 @@ impl From<BigUint> for SimpleBigint {
 #[cfg(test)]
 mod test {
     use super::*;
-    use rand::Rng;
+    use rand::{thread_rng, Rng};
 
     impl PartialEq<BigUint> for SimpleBigint {
         fn eq(&self, other: &BigUint) -> bool {
@@ -433,10 +522,19 @@ mod test {
 
             let mut ref_a = a.as_biguint();
 
+            // Check that adding a u64 to a is correct
             a += b;
             ref_a += b;
-
             assert_eq!(a, ref_a);
+
+            // Now check that adding a SimpleBigint is correct
+            let a = rand_biguint(&mut rng);
+            let b = rand_biguint(&mut rng);
+
+            let ref_a = a.as_biguint();
+            let ref_b = b.as_biguint();
+
+            assert_eq!(&a + &b, ref_a + ref_b);
         }
     }
 
@@ -460,6 +558,21 @@ mod test {
                 let ref_sub = ref_b - ref_a;
                 assert_eq!(sub, ref_sub);
             }
+        }
+    }
+
+    #[test]
+    fn twopow() {
+        let mut rng = thread_rng();
+
+        for _ in 0..100 {
+            // Restrict the range so it's bigger than a u16 but not so crazy big that it slows down
+            // the BigUint calculation
+            let pow = rng.gen_range(0u32..70000);
+            let a = SimpleBigint::twopow(pow);
+            let ref_a = BigUint::from(1u8) << pow;
+
+            assert_eq!(a, ref_a);
         }
     }
 }

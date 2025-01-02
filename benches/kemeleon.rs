@@ -7,17 +7,17 @@ fn encode_decode_with_n<const N: usize>(c: &mut Criterion) {
     // First pick a vector that we know can be encoded
     let (v, encoded) = loop {
         let v = rand_vec::<N>(&mut rng);
-        if let Some(e) = vector_encode(&mut rng, &v) {
+        if let Some(e) = kemeleon1_encode(&mut rng, &v) {
             break (v, e);
         }
     };
 
     c.bench_function(&format!("encode[N={N}]"), |b| {
-        b.iter(|| vector_encode(&mut rng, &v))
+        b.iter(|| kemeleon1_encode(&mut rng, &v))
     });
 
     c.bench_function(&format!("decode[N={N}]"), |b| {
-        b.iter(|| vector_decode::<N>(&encoded))
+        b.iter(|| kemeleon1_decode::<N>(&encoded))
     });
 }
 
