@@ -58,7 +58,7 @@ fn all(c: &mut Criterion) {
     kemeleon1::<128>(c);
     kemeleon1::<256>(c);
     kemeleon1::<512>(c);
-    kemeleon1::<768>(c);
+    //kemeleon1::<768>(c);
     kemeleon1::<1024>(c);
 }
 

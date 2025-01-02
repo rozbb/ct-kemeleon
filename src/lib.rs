@@ -168,6 +168,22 @@ fn divrem_by_qpow(mut x: SimpleBigint, pow: u32) -> (SimpleBigint, SimpleBigint)
 }
 
 /// Given a sequence of limbs x in big-endian order in base b, returns a sequence of limbs in
+/// big-endian order in base b*q^(2^pow)
+fn raise_base_by(x: Vec<SimpleBigint>, pow: u32) -> Vec<SimpleBigint> {
+    assert!(x.len() % 2 == 0);
+
+    let mut out = Vec::with_capacity(x.len() / 2);
+    for chunk in x.chunks_exact(2) {
+        let [hi, lo] = chunk else { unreachable!() };
+        let mut combined = hi * &SIMPLE_QPOWS[pow as usize];
+        combined += lo;
+        out.push(combined);
+    }
+
+    out
+}
+
+/// Given a sequence of limbs x in big-endian order in base b, returns a sequence of limbs in
 /// big-endian order in base b/q^(2^pow)
 fn lower_base_by(x: Vec<SimpleBigint>, pow: u32) -> Vec<SimpleBigint> {
     // For each limb, divide the limb by q^(2^pow) and record (quotient, remainder) in that order.
@@ -288,13 +304,18 @@ pub fn kemeleon2_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
 
 /// Given a sequence of integers mod q, returns the bigint Σᵢ qⁱ vᵢ
 fn bigint_encode(v: &[u16]) -> SimpleBigint {
-    let mut sum = BigUint::ZERO;
+    let mut cur_limbs: Vec<SimpleBigint> =
+        v.iter().map(|&x| SimpleBigint::from(x as u64)).collect();
 
-    for coeff in v.iter() {
-        sum *= MLKEM_Q;
-        sum += *coeff;
+    let N = v.len();
+    assert!(N.is_power_of_two());
+    for pow in 0..N.ilog2() {
+        let next_limbs = raise_base_by(cur_limbs, pow);
+        cur_limbs = next_limbs;
     }
-    SimpleBigint::from(sum)
+    assert_eq!(cur_limbs.len(), 1);
+
+    core::mem::take(&mut cur_limbs[0])
 }
 
 /// Given a bigint, returns the sequence of mod-q values that were used in its encoding

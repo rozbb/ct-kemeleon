@@ -7,7 +7,7 @@ type Limb = u64;
 type WideLimb = u128;
 
 /// A little endian representation of a non-negative integer
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct SimpleBigint(Vec<Limb>);
 
 // Copied from https://github.com/RustCrypto/crypto-bigint/blob/f9f2e4aec43b87ebb5595e35b28eab45d74d9886/src/primitives.rs#L58
@@ -245,20 +245,32 @@ impl<'a> core::ops::Add<&'a SimpleBigint> for &'a SimpleBigint {
     type Output = SimpleBigint;
 
     fn add(self, rhs: &'a SimpleBigint) -> Self::Output {
-        let mut out = vec![0; core::cmp::max(self.num_limbs(), rhs.num_limbs()) + 1];
+        // Use add_assign
+        let mut tmp = self.clone();
+        tmp += rhs;
+        tmp
+    }
+}
+
+impl<'a> core::ops::AddAssign<&'a SimpleBigint> for SimpleBigint {
+    fn add_assign(&mut self, rhs: &'a SimpleBigint) {
+        // Extend self to be the length of max(lhs, rhs), plus 1 to handle overflow
+        let new_num_limbs = core::cmp::max(self.num_limbs(), rhs.num_limbs()) + 1;
+        self.0
+            .extend(core::iter::repeat(0).take(new_num_limbs - self.num_limbs()));
+
+        // Add and propagate the carry. Extend the RHS by 1 limb so that the final carry gets added
+        // into the LHS
         let mut carry = 0;
-        self.zip_limbs_iter(rhs)
-            .zip(out.iter_mut())
-            .for_each(|((a, b), out)| {
-                let (sum, new_carry) = adc(*a, *b, carry);
-                *out = sum;
-                carry = new_carry;
-            });
-
-        // Add the carry if there is one
-        out.last_mut().map(|last| *last = carry);
-
-        SimpleBigint(out)
+        for (l, r) in self
+            .0
+            .iter_mut()
+            .zip(rhs.0.iter().chain(core::iter::once(&0)))
+        {
+            let (sum, new_carry) = adc(*l, *r, carry);
+            *l = sum;
+            carry = new_carry;
+        }
     }
 }
 
@@ -375,6 +387,14 @@ impl<'a> core::ops::ShrAssign<u32> for SimpleBigint {
         }
 
         self.0.truncate(self.0.len() - new_lowest_limb);
+    }
+}
+
+impl From<u64> for SimpleBigint {
+    fn from(value: u64) -> Self {
+        // This only works when limbs are 64 bits
+        assert_eq!(Limb::BITS, 64);
+        SimpleBigint(vec![value])
     }
 }
 
