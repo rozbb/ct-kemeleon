@@ -18,12 +18,17 @@ fn kemeleon1<const N: usize>(c: &mut Criterion) {
     });
 
     // Do a separate bench to measure how long Kemeleon1 takes when you account for retries
+    let inputs = core::iter::repeat_with(|| rand_vec::<N>(&mut rng))
+        .take(1000)
+        .collect::<Vec<_>>();
+    let mut i = 0;
     c.bench_function(&format!("kemeleon1_encode_with_reject[N={N}]"), |b| {
         b.iter(|| loop {
-            let v = rand_vec::<N>(&mut rng);
+            let v = inputs[i % 1000];
             if kemeleon1_encode(&mut rng, &v).is_some() {
                 break;
             }
+            i += 1;
         })
     });
 

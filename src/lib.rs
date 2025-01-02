@@ -26,13 +26,7 @@ pub fn rand_vec<const N: usize>(rng: &mut impl Rng) -> [u16; N] {
 // public key or ciphertext may fail encoding (triggering a retry)
 // TODO: Optimize by using q^(2^i) bases, just like in decode
 pub fn kemeleon1_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Option<Vec<u8>> {
-    // Compute Σᵢ qⁱ vᵢ
-    let mut sum = BigUint::ZERO;
-
-    for coeff in v.iter() {
-        sum *= MLKEM_Q;
-        sum += *coeff;
-    }
+    let mut sum = bigint_encode(v).as_biguint();
 
     // Check if the top bit is set. If not, then this input can be encoded
     // Top bit (0-indexed) is ⌈log₂(q^N + 1)⌉ - 1
@@ -57,15 +51,7 @@ pub fn kemeleon1_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Opt
 pub fn kemeleon2_encode<const N: usize>(rng: &mut impl Rng, v: &[u16; N]) -> Vec<u8> {
     // We only support vectors of size 256 right now
     assert_eq!(N, 256);
-
-    // Compute a = Σᵢ qⁱ vᵢ
-    let mut sum = BigUint::ZERO;
-
-    for coeff in v.iter() {
-        sum *= MLKEM_Q;
-        sum += *coeff;
-    }
-    let sum = SimpleBigint::from(sum);
+    let sum = bigint_encode(v);
 
     // Get pow such that N = 2^pow
     assert!(N.is_power_of_two());
@@ -298,6 +284,17 @@ pub fn kemeleon2_decode<const N: usize>(bytes: &[u8]) -> [u16; N] {
 
     // Now decode the unblinded integer
     bigint_decode(rem)
+}
+
+/// Given a sequence of integers mod q, returns the bigint Σᵢ qⁱ vᵢ
+fn bigint_encode(v: &[u16]) -> SimpleBigint {
+    let mut sum = BigUint::ZERO;
+
+    for coeff in v.iter() {
+        sum *= MLKEM_Q;
+        sum += *coeff;
+    }
+    SimpleBigint::from(sum)
 }
 
 /// Given a bigint, returns the sequence of mod-q values that were used in its encoding
